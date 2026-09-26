@@ -36,8 +36,8 @@ Trade-offs:
 ## Intended architecture
 
 - **Host loop:** the Rust side owns macroquad's `#[macroquad::main]` async loop and a single `luars::Lua` state.
-- **Love2D-style lifecycle:** the game script defines callbacks (load, update with `dt`, draw, input events). The host calls them at the right point in each frame. Callback and module names are not finalized yet.
-- **Engine API:** Rust exposes functionality to Lua as modules or tables grouped by area, such as graphics, audio, input, filesystem and timer. This Lua-facing API is the product, so keep it coherent and documented.
+- **Lua API:** designed in [docs/api.md](docs/api.md). It's Love2D-shaped under a single global, `pg`, with callbacks like `pg.update(dt)` and modules like `pg.graphics`. This Lua-facing API is the product. Update the doc in the same change as any API change, and record every divergence from Love2D there.
+- **Files are mounted up front:** native reads the game directory, and the web fetches the whole game as one archive before any Lua runs. Every file API, and `require`, is synchronous on every platform.
 - **Audio:** the host owns kira's `AudioManager`. Sounds and handles reach Lua as userdata.
 
 ## Targets
