@@ -10,3 +10,4 @@ members = ["xtask"]
 macroquad = "0.4.16"
 kira = "0.12.4"
 luars = "0.26.3"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

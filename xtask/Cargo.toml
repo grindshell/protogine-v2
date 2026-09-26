@@ -5,3 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

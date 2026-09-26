@@ -1,31 +1,56 @@
-use kira::{AudioManager, AudioManagerSettings, DefaultBackend};
-use luars::{Lua, LuaApi, SafeOption, Stdlib};
-use macroquad::prelude::*;
+mod api;
+mod conf;
+mod engine;
+mod game;
+mod graphics;
+mod screens;
+mod vfs;
 
-fn run_lua() -> Result<String, Box<dyn std::error::Error>> {
-    let mut lua = Lua::new(SafeOption::default());
-    lua.open_stdlib(Stdlib::All)?;
-    lua.register_function("add", |a: i64, b: i64| a + b)?;
-    let result: String =
-        lua.eval(r#"local x = add(40, 2); return string.format("lua says %d", x)"#)?;
-    Ok(result)
+use conf::Conf;
+use engine::Start;
+use macroquad::Window;
+
+/// The archive the web build fetches on startup, written by `cargo xtask web --game`.
+#[cfg(target_arch = "wasm32")]
+const GAME_ARCHIVE: &str = "game.zip";
+
+/// Native: mount the game and run its `conf.lua` before opening the window, so the window
+/// can be created with the game's settings.
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let start = match args.next() {
+        None => Start::NoGame,
+        Some(path) => match vfs::Vfs::mount_path(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
+            .and_then(game::Game::new)
+        {
+            Ok(game) => Start::Game(game),
+            Err(report) => Start::Error(report),
+        },
+    };
+    let conf = match &start {
+        Start::Game(game) => game.conf().clone(),
+        _ => Conf::default(),
+    };
+    let args: Vec<String> = args.collect();
+    Window::from_config(conf.window_conf(), engine::run(start, args));
 }
 
-#[macroquad::main("protogine")]
-async fn main() {
-    let lua_result = run_lua().unwrap_or_else(|e| format!("lua error: {e}"));
-
-    // Keep the manager alive for the whole loop; dropping it closes the audio device.
-    let audio = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default());
-    let audio_status = match &audio {
-        Ok(_) => "kira ok".to_string(),
-        Err(e) => format!("kira error: {e}"),
-    };
-
-    loop {
-        clear_background(DARKGRAY);
-        draw_text(&lua_result, 20.0, 40.0, 30.0, WHITE);
-        draw_text(&audio_status, 20.0, 80.0, 30.0, WHITE);
-        next_frame().await;
-    }
+/// Web: the page owns the canvas, so open with defaults, then fetch and mount the game.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    Window::from_config(Conf::default().window_conf(), async {
+        let start = match macroquad::file::load_file(GAME_ARCHIVE).await {
+            Err(_) => Start::NoGame,
+            Ok(bytes) => match vfs::Vfs::mount_zip(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(game::Game::new)
+            {
+                Ok(game) => Start::Game(game),
+                Err(report) => Start::Error(report),
+            },
+        };
+        engine::run(start, Vec::new()).await;
+    });
 }

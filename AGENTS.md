@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** early scaffold. `src/main.rs` is only a smoke test that evaluates a Lua snippet, creates a kira `AudioManager`, and draws the results with macroquad. Update this file as the architecture firms up.
+**Status:** the core lifecycle and `pg.graphics` work on native and web; `games/demo` exercises them. Input and audio aren't implemented yet. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -29,16 +29,34 @@ Trade-offs:
 - Open libraries with `open_stdlib(Stdlib::X)` or `open_stdlibs(&[...])`. The README's `load_stdlibs` doesn't exist.
 - `eval`, `execute`, `register_function`, `create_function` and `globals` are on `LuaApi`. `load(src)` returns a `Chunk` builder.
 - For userdata, use `#[derive(LuaUserData)]` with `#[lua_methods]`, then `register_type_of::<T>(name)`.
+  - Rename methods to Love2D names with `#[lua(name = "getWidth")]`.
+  - Don't give a method the Rust name `type_name`, because it collides with `UserDataTrait::type_name`.
+  - Reading an unknown field on userdata raises an error instead of returning nil.
+- **Errors carry no message.** `LuaError` is a bare enum, and the message lives in VM state. Call `lua.get_error_message(e)` right away; it can only be read once.
+- **Typed callbacks** (`create_function`) can't take a variable number of arguments. Their argument errors don't name the function, and if one returns `LuaResult`, the error message is lost ("Runtime Error"). `pg.*` functions therefore use raw callbacks through `api::Args` (see `src/api/mod.rs`).
+- `LuaTable`, `LuaFunction` and `Value` hold raw pointers into the VM, so drop them before the `Lua` that owns them. `Game` declares `lua` as its last field for this reason.
 - Async support comes through `register_async_function` and the `LuaAsyncApi` trait (`eval_async`, `call_async*`). Whether these work under macroquad's executor is still unverified.
 - `Lua` is `!Send` by default. The `unsafe-send` feature only adds unchecked `unsafe impl Send`. Don't enable it, because macroquad's loop is single-threaded anyway.
 - Source code is in `~/.cargo/registry/src/*/luars-*/src/`, and `src/lua_api/mod.rs` has the full trait surface.
 
-## Intended architecture
+## Architecture
 
-- **Host loop:** the Rust side owns macroquad's `#[macroquad::main]` async loop and a single `luars::Lua` state.
-- **Lua API:** designed in [docs/api.md](docs/api.md). It's Love2D-shaped under a single global, `pg`, with callbacks like `pg.update(dt)` and modules like `pg.graphics`. This Lua-facing API is the product. Update the doc in the same change as any API change, and record every divergence from Love2D there.
-- **Files are mounted up front:** native reads the game directory, and the web fetches the whole game as one archive before any Lua runs. Every file API, and `require`, is synchronous on every platform.
-- **Audio:** the host owns kira's `AudioManager`. Sounds and handles reach Lua as userdata.
+- **Lua API:** specified in [docs/api.md](docs/api.md). It's Love2D-shaped under a single global, `pg`, with callbacks like `pg.update(dt)` and modules like `pg.graphics`. This Lua-facing API is the product. Update the doc in the same change as any API change, and record every divergence from Love2D there.
+- **Files are mounted up front:** native reads the game directory or `.zip`, and the web fetches `game.zip` before any Lua runs. Every file API, and `require`, is synchronous on every platform.
+- **Audio (planned):** the host owns kira's `AudioManager`. Sounds and handles reach Lua as userdata.
+
+Source layout:
+
+| Path | Role |
+| --- | --- |
+| `src/main.rs` | Entry point. Natively it mounts the game and runs `conf.lua` before opening the window. On the web it opens the window, then fetches `game.zip`. |
+| `src/engine.rs` | The main loop, a state machine over the no-game, game, error and blank screens. It also handles quitting. |
+| `src/game.rs` | `Game`, which owns the Lua state and runs the lifecycle (`conf.lua`, `main.lua`, `pg.*` callbacks). `Host` is the engine state that `pg.*` functions share through `Rc<RefCell<_>>`. |
+| `src/api/` | The `pg.*` bindings, one file per module. `mod.rs` has the `Args` helper. `prelude.lua` runs first in every game and sets up `require`, `print`, the restricted `os`/`debug`, and `invoke` (`xpcall` plus a traceback). |
+| `src/graphics.rs` | The engine side of `pg.graphics`: state, the transform stack, shapes, images and text on top of macroquad. It has no Lua dependency. |
+| `src/vfs.rs` | The game's read-only, case-sensitive filesystem: a directory or an in-memory zip. |
+| `src/screens.rs` | The no-game and error screens. |
+| `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |
 
 ## Targets
 
@@ -81,16 +99,18 @@ Requirements and notes:
 ## Commands
 
 ```sh
-cargo run                    # run natively
+cargo run -- games/demo      # run a game natively (a directory or .zip); no argument shows the no-game screen
 cargo build --release
 cargo clippy --workspace --all-targets
 cargo fmt --all
 cargo test
-cargo xtask web [--release]                # web build into target/web/
-cargo xtask serve [--release] [--port N]   # web build, then serve at http://127.0.0.1:8080/
+cargo xtask web [--release] [--game DIR]                # web build into target/web/, packing DIR as game.zip
+cargo xtask serve [--release] [--game DIR] [--port N]   # web build, then serve at http://127.0.0.1:8080/
 ```
 
-The repo is a Cargo workspace: the root package is the engine, and `xtask/` holds the build tooling (std only). `.claude/launch.json` has a `web` config that runs `cargo xtask serve`.
+The repo is a Cargo workspace: the root package is the engine, and `xtask/` holds the build tooling. `.claude/launch.json` has a `web` config that runs `cargo xtask serve --game games/demo`.
+
+To check API behavior quickly, write a scratch game whose `pg.load` checks results with `pcall` and `print`s them, then calls `pg.event.quit()`. Run it natively and read stdout; the process exits by itself.
 
 ## Conventions
 

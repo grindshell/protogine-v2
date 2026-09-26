@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "cargo",
-      "runtimeArgs": ["xtask", "serve"],
+      "runtimeArgs": ["xtask", "serve", "--game", "games/demo"],
       "port": 8080
     }
   ]

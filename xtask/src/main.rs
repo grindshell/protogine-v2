@@ -1,7 +1,9 @@
 //! Build helpers, run with `cargo xtask <command>`.
 //!
-//! - `web [--release]`: build for wasm32, run wasm-bindgen, and assemble `target/web/`.
-//! - `serve [--release] [--port N]`: `web`, then serve `target/web/` on localhost.
+//! - `web [--release] [--game DIR]`: build for wasm32, run wasm-bindgen, and assemble
+//!   `target/web/`. `--game` packs DIR into `game.zip`; without it the page shows the no-game
+//!   screen.
+//! - `serve [--release] [--game DIR] [--port N]`: `web`, then serve `target/web/` on localhost.
 
 use std::{
     env, fs,
@@ -16,12 +18,15 @@ use std::{
 const CRATE: &str = "protogine-v2";
 /// wasm-bindgen output name; `web/index.html` loads `game.js` and `game_bg.wasm`.
 const OUT_NAME: &str = "game";
-const USAGE: &str = "usage: cargo xtask <web|serve> [--release] [--port N]";
+/// The game archive the engine fetches on startup (see `src/main.rs`).
+const GAME_ARCHIVE: &str = "game.zip";
+const USAGE: &str = "usage: cargo xtask <web|serve> [--release] [--game DIR] [--port N]";
 
 type Result<T = ()> = std::result::Result<T, String>;
 
 struct Options {
     release: bool,
+    game: Option<PathBuf>,
     port: u16,
 }
 
@@ -46,12 +51,14 @@ fn main() -> ExitCode {
 fn parse_options(args: &[String]) -> Result<Options> {
     let mut opts = Options {
         release: false,
+        game: None,
         port: 8080,
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--release" => opts.release = true,
+            "--game" => opts.game = Some(args.next().ok_or("--game needs a directory")?.into()),
             "--port" => {
                 let value = args.next().ok_or("--port needs a value")?;
                 opts.port = value
@@ -134,8 +141,79 @@ fn build_web(opts: &Options) -> Result<PathBuf> {
         fs::copy(&src, out.join(file)).map_err(|e| format!("copy {}: {e}", src.display()))?;
     }
 
+    let archive = out.join(GAME_ARCHIVE);
+    match &opts.game {
+        Some(game) => pack_game(game, &archive)?,
+        None => match fs::remove_file(&archive) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("remove {}: {e}", archive.display())),
+        },
+    }
+
     println!("web build written to {}", out.display());
     Ok(out)
+}
+
+/// Zips a game directory with `main.lua` at the archive root.
+fn pack_game(game: &Path, archive: &Path) -> Result {
+    if !game.join("main.lua").is_file() {
+        return Err(format!("{} has no main.lua", game.display()));
+    }
+
+    let mut files = Vec::new();
+    collect_files(game, game, &mut files)?;
+    files.sort();
+
+    let file =
+        fs::File::create(archive).map_err(|e| format!("create {}: {e}", archive.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, path) in &files {
+        let data = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let write_error =
+            |e: &dyn std::fmt::Display| format!("write {name} to {}: {e}", archive.display());
+        zip.start_file(name.as_str(), options)
+            .map_err(|e| write_error(&e))?;
+        zip.write_all(&data).map_err(|e| write_error(&e))?;
+    }
+    zip.finish()
+        .map_err(|e| format!("finish {}: {e}", archive.display()))?;
+
+    println!(
+        "packed {} files from {} into {GAME_ARCHIVE}",
+        files.len(),
+        game.display()
+    );
+    Ok(())
+}
+
+/// Collects `(archive name, path)` for every file under `dir`, skipping hidden entries.
+fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>) -> Result {
+    let entries = fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read {}: {e}", dir.display()))?
+            .path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files(root, &path, files)?;
+        } else {
+            let relative = path.strip_prefix(root).unwrap();
+            let name = relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            files.push((name, path));
+        }
+    }
+    Ok(())
 }
 
 /// Rewrites wasm-bindgen's `--target web` glue so miniquad's gl.js can own instantiation.
@@ -264,6 +342,7 @@ fn content_type(path: &Path) -> &'static str {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
         Some("wasm") => "application/wasm",
+        Some("zip") => "application/zip",
         _ => "application/octet-stream",
     }
 }

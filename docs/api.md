@@ -1,6 +1,9 @@
 # Lua API design
 
-**Status:** first design pass, not implemented. It covers the core lifecycle, graphics and input. Audio, filesystem, math and system come in later passes.
+**Status:** first design pass. It covers the core lifecycle, graphics and input. Audio, filesystem, math and system come in later passes.
+
+- **Implemented:** games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer` and `pg.event`. `games/demo` exercises them.
+- **Not yet implemented:** `pg.keyboard`, `pg.mouse` and `pg.touch`.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -164,6 +167,8 @@ On the error screen, Ctrl+C (Cmd+C on macOS) copies the message and traceback to
 
 `Font` methods: `getWidth(text)`, `getHeight()`, `setFilter(filter)`, `getFilter()`.
 
+Every `Font` made from the built-in font shares one glyph atlas, so `setFilter` on one of them filters them all.
+
 ### Transforms
 
 | Function | Notes |
@@ -256,6 +261,8 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
 ## Divergences from Love2D
 
 - **Lua 5.5 (luars), not LuaJIT.** There's no `ffi`, no `bit` (use the native bitwise operators), no `setfenv`/`getfenv`, and no `loadstring`. `unpack` becomes `table.unpack`. Love2D libraries that rely on any of these need porting.
+  - Integers and floats are distinct. `pg.*` functions return whole numbers as integers, so sizes print as `32`, not `32.0`.
+  - Syntax errors come from luars' parser and can read differently from C Lua's, for example `expected 'TkRightParen'`.
 - **The engine owns the main loop and the error screen.** There's no `pg.run` or `pg.errorhandler`.
 - **Files:**
   - The game is mounted read-only.
@@ -268,6 +275,7 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
   - There's no joystick or gamepad support.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
+  - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.
   - `setCursor` takes a name instead of a `Cursor` object.
   - Touch ids are integers, and `pressure` is always 1.
 - **`dt` is capped** at `t.maxdelta` (10 seconds by default).
