@@ -206,8 +206,10 @@ impl Args<'_> {
             )));
         }
         Ok(coords
-            .chunks_exact(2)
-            .map(|c| vec2(c[0] as f32, c[1] as f32))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[x, y]| vec2(*x as f32, *y as f32))
             .collect())
     }
 

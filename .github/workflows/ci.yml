@@ -23,10 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
+      # Installs the toolchain pinned in rust-toolchain.toml, with its components and targets.
+      - run: rustup toolchain install
       - name: Install system libraries
         run: |
           sudo apt-get update
@@ -46,7 +44,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Installs the toolchain pinned in rust-toolchain.toml, with its components and targets.
+      - run: rustup toolchain install
       - name: Install system libraries
         if: runner.os == 'Linux'
         run: |
@@ -73,9 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # Installs the toolchain pinned in rust-toolchain.toml, with its components and targets.
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # wasm-bindgen-cli has to match the wasm-bindgen crate in Cargo.lock exactly.
       - name: Find the wasm-bindgen version

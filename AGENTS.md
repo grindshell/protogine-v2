@@ -126,7 +126,7 @@ The repo is a Cargo workspace: the root package is the engine, and `xtask/` hold
 
 ### CI
 
-`.github/workflows/ci.yml` runs on pushes to `master` and on pull requests.
+`.github/workflows/ci.yml` runs on pushes to `master` and on pull requests. Every job installs the pinned toolchain with `rustup toolchain install`.
 
 - **Format and lint:** `cargo fmt --check`, then clippy with `-D warnings` for native and for `wasm32`.
 - **Test** runs on Linux, Windows and macOS.
@@ -138,7 +138,7 @@ Linux builds need `pkg-config libasound2-dev libdbus-1-dev libx11-dev libxi-dev 
 
 ## Conventions
 
-- Rust edition 2024.
+- Rust edition 2024. The toolchain is pinned in `rust-toolchain.toml` (1.98.1, with clippy, rustfmt and the wasm32 target). rustup installs it on first use, and CI installs the same version. Bump it on purpose, and fix any new clippy lints in the same change.
 - Game scripts are **Lua 5.5**, not Luau. That means no type annotations, backtick string interpolation, `continue`, or compound assignment. `goto`, integer subtypes, and `<const>`/`<close>` are available.
 - Don't expose luars' `io` or `os` libraries to game scripts wholesale. `os.exit` calls `std::process::exit` and `os.execute` spawns processes. Open a vetted subset of libraries and route file access through the engine's own API.
 - Script errors must not bring down the host with a Rust panic. Surface them with a Lua traceback.
