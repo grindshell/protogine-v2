@@ -124,6 +124,18 @@ The repo is a Cargo workspace: the root package is the engine, and `xtask/` hold
   - These rely on `PROTOGINE_EXIT_ON_ERROR`. When it's set, the native engine logs the report to stderr and exits with status 1 instead of showing the error screen.
 - **Event handling:** input events can't be injected into a real window, so `src/input.rs` unit-tests the event logic directly.
 
+### CI
+
+`.github/workflows/ci.yml` runs on pushes to `master` and on pull requests.
+
+- **Format and lint:** `cargo fmt --check`, then clippy with `-D warnings` for native and for `wasm32`.
+- **Test** runs on Linux, Windows and macOS.
+  - Linux runs everything under `xvfb-run`, with Mesa's software OpenGL. There's no sound card, so the audio suite skips itself.
+  - Windows and macOS runners have no usable OpenGL, so they only build everything and run the unit tests.
+- **Web build:** `cargo xtask web --release --game games/demo`, with `wasm-bindgen-cli` pinned to the version in `Cargo.lock`. The result is uploaded as the `web-demo` artifact.
+
+Linux builds need `pkg-config libasound2-dev libdbus-1-dev libx11-dev libxi-dev libgl1-mesa-dev`. kira's default features pull in D-Bus, through cpal's realtime audio thread.
+
 ## Conventions
 
 - Rust edition 2024.
