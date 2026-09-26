@@ -3,6 +3,7 @@ mod conf;
 mod engine;
 mod game;
 mod graphics;
+mod input;
 mod screens;
 mod vfs;
 

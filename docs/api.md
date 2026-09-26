@@ -2,8 +2,7 @@
 
 **Status:** first design pass. It covers the core lifecycle, graphics and input. Audio, filesystem, math and system come in later passes.
 
-- **Implemented:** games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer` and `pg.event`. `games/demo` exercises them.
-- **Not yet implemented:** `pg.keyboard`, `pg.mouse` and `pg.touch`.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse` and `pg.touch`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -98,13 +97,13 @@ On the web, the page's canvas determines the size and title. There, `title`, `wi
 | `pg.update(dt)` | Every frame. `dt` is the seconds since the previous frame, capped at `t.maxdelta` (10 by default). The cap keeps a long stall, such as a backgrounded browser tab, from producing one huge step. |
 | `pg.draw()` | Every frame, after `update`. The screen has been cleared to the background color, and the transform reset to the origin. |
 | `pg.resize(w, h)` | When the drawable area changes size. |
-| `pg.visible(visible)` | When the window is minimized (`false`) or restored (`true`). |
+| `pg.visible(visible)` | When the window loses focus or is minimized (`false`), and when it gets focus back (`true`). miniquad reports both the same way. Losing focus first releases every held key, mouse button and touch, with the matching callbacks, so nothing stays stuck down. |
 | `pg.quit()` | When a quit is requested: a window close, or `pg.event.quit()`. Return `true` to cancel. Browsers can't intercept tab closes, so on the web only `pg.event.quit()` triggers it. |
 | Input callbacks | See [pg.keyboard](#pgkeyboard), [pg.mouse](#pgmouse) and [pg.touch](#pgtouch). |
 
 ### Frame order
 
-1. Dispatch this frame's input events to their callbacks, in the order they happened.
+1. Call `pg.resize` if the size changed, then dispatch this frame's input and focus events to their callbacks, in the order they happened.
 2. Call `pg.update(dt)`.
 3. Clear to the background color, reset the transform stack, and call `pg.draw()`.
 4. Present.
@@ -218,43 +217,49 @@ These are planned for later:
 
 | Function | Notes |
 | --- | --- |
-| `isDown(key, ...)` | `true` if any of the given keys is held. |
+| `isDown(key, ...)` | `true` if any of the given keys is held. A name that isn't a Love2D key constant is an error. |
 | `setKeyRepeat(enable)` / `hasKeyRepeat()` | Off by default. While off, held keys don't fire repeat `keypressed` events. |
-| `setTextInput(enable)` / `hasTextInput()` | Controls `textinput` events, and the on-screen keyboard on mobile. |
+| `setTextInput(enable)` / `hasTextInput()` | On by default. Controls `textinput` events, and the on-screen keyboard on mobile. |
 
 Callbacks:
 
-- `pg.keypressed(key, isrepeat)`
-- `pg.keyreleased(key)`
-- `pg.textinput(text)`: `text` is one UTF-8 character.
+- `pg.keypressed(key, scancode, isrepeat)`
+- `pg.keyreleased(key, scancode)`
+- `pg.textinput(text)`: `text` is one UTF-8 character. Control characters, such as backspace and return, don't produce it.
 
-**Key names** follow Love2D's [KeyConstant](https://love2d.org/wiki/KeyConstant), for example `"a"`, `"1"`, `"space"`, `"return"`, `"escape"`, `"left"`, `"lshift"`, `"f1"`, `"kp5"` and `"-"`. Keys with no Love2D name report `"unknown"`.
+**Key names** follow Love2D's [KeyConstant](https://love2d.org/wiki/KeyConstant), for example `"a"`, `"1"`, `"space"`, `"return"`, `"escape"`, `"left"`, `"lshift"`, `"f1"`, `"kp5"` and `"-"`. Keys with no Love2D name report `"unknown"`. Constants for keys miniquad never reports, such as `"!"` or `"volumeup"`, are accepted by `isDown` but never down.
+
+On Windows, macOS and the web, miniquad identifies keys by their physical position, so a key's name is what that key says on a US layout, whatever the player's layout is. That's how Love2D's scancodes work, so `scancode` is always the same as `key`. Use `textinput` for the characters the player actually typed. On Linux, names follow the layout.
+
+All input state (`isDown` for keys and buttons, positions, touches) is updated for the whole frame's events before any input callback runs, as in Love2D.
 
 ## pg.mouse
 
 | Function | Notes |
 | --- | --- |
 | `getPosition()`, `getX()`, `getY()` | |
-| `isDown(button, ...)` | Buttons are numbered like Love2D: `1` left, `2` right, `3` middle. |
+| `isDown(button, ...)` | Buttons are numbered like Love2D: `1` left, `2` right, `3` middle. Other numbers are never down. |
 | `setVisible(visible)` / `isVisible()` | |
-| `setGrabbed(grabbed)` / `isGrabbed()` | Confines the cursor to the window. |
-| `setCursor(name)` | Takes a system cursor name: `"arrow"`, `"ibeam"`, `"wait"`, `"crosshair"`, `"hand"`, `"sizeall"`, `"sizewe"`, `"sizens"`, `"sizenesw"`, `"sizenwse"` or `"no"`. |
+| `setRelativeMode(enable)` / `getRelativeMode()` | Hides and captures the cursor. Its position stays put, and `mousemoved` reports only `dx, dy`. On the web this is pointer lock, which the browser grants only after the player clicks the page. |
+| `setCursor(name)` | Takes a system cursor name: `"arrow"`, `"ibeam"`, `"wait"`, `"waitarrow"`, `"crosshair"`, `"hand"`, `"sizeall"`, `"sizewe"`, `"sizens"`, `"sizenesw"`, `"sizenwse"` or `"no"`. `setCursor()` restores the arrow. |
 
 Callbacks:
 
 - `pg.mousepressed(x, y, button, istouch, presses)`
 - `pg.mousereleased(x, y, button, istouch, presses)`
 - `pg.mousemoved(x, y, dx, dy, istouch)`
-- `pg.wheelmoved(x, y)`
+- `pg.wheelmoved(x, y)`: about 1 per wheel notch, with positive `y` away from the player and positive `x` to the right. Touchpads give fractions.
 
-The engine counts `presses` itself, so `2` means a double click. The primary touch also produces mouse events, with `istouch = true`.
+The engine counts `presses` itself, like SDL: presses of the same button within 0.5 seconds and 32 pixels of each other add up, so `2` means a double click. The primary touch (the first finger down while no other finger drives the mouse) also moves the cursor and holds button 1, with `istouch = true`. Its mouse events come just before its touch events.
+
+When the game stops, by an error or a quit, the engine shows the cursor again and leaves relative mode.
 
 ## pg.touch
 
 | Function | Notes |
 | --- | --- |
-| `getTouches()` | Returns a list of active touch ids (integers). |
-| `getPosition(id)` | Returns `x, y`. |
+| `getTouches()` | Returns a list of active touch ids (integers), oldest first. |
+| `getPosition(id)` | Returns `x, y`. An id that isn't active is an error. |
 
 Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` and `pg.touchreleased(...)`, which take the same arguments. `pressure` is always 1.
 
@@ -270,12 +275,14 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
   - Paths are case-sensitive on every platform.
 - **Window:** the title can only be set in `conf.lua`, because miniquad has no runtime title API.
 - **Input:**
-  - There are no scancodes, only key names; miniquad doesn't expose scancodes.
+  - Key names come from physical key positions (except on Linux), so `key` doesn't follow the player's layout and always equals `scancode`. There's no `isScancodeDown`, `getKeyFromScancode` or `getScancodeFromKey`.
   - Only three mouse buttons are supported.
+  - There's no `setGrabbed`, because macroquad can only capture the cursor in a way that behaves like relative mode. Use `setRelativeMode`.
+  - `pg.visible` also fires on focus changes, and there's no separate `pg.focus`.
   - There's no joystick or gamepad support.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.
-  - `setCursor` takes a name instead of a `Cursor` object.
+  - `setCursor` takes a name instead of a `Cursor` object, and there's no `getCursor`.
   - Touch ids are integers, and `pressure` is always 1.
 - **`dt` is capped** at `t.maxdelta` (10 seconds by default).

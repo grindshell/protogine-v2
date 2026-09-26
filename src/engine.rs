@@ -5,6 +5,7 @@ use macroquad::prelude::*;
 
 use crate::{
     game::Game,
+    input::{InputQueue, RawEvent},
     screens::{self, ErrorScreen},
     vfs::Vfs,
 };
@@ -33,6 +34,7 @@ enum Flow {
 
 pub async fn run(start: Start, args: Vec<String>) {
     prevent_quit();
+    let input = InputQueue::new();
 
     let mut screen = match start {
         Start::NoGame => Screen::NoGame,
@@ -41,7 +43,9 @@ pub async fn run(start: Start, args: Vec<String>) {
     };
 
     loop {
-        let (next, flow) = frame(screen, &args);
+        // Drained on every screen, so a game only sees input from after it started.
+        let events = input.drain();
+        let (next, flow) = frame(screen, events, &args);
         screen = next;
         if let Flow::Exit = flow {
             macroquad::miniquad::window::order_quit();
@@ -51,7 +55,7 @@ pub async fn run(start: Start, args: Vec<String>) {
     }
 }
 
-fn frame(screen: Screen, args: &[String]) -> (Screen, Flow) {
+fn frame(screen: Screen, events: Vec<RawEvent>, args: &[String]) -> (Screen, Flow) {
     match screen {
         Screen::NoGame => match screens::no_game_frame() {
             None if is_quit_requested() => (Screen::NoGame, Flow::Exit),
@@ -59,7 +63,7 @@ fn frame(screen: Screen, args: &[String]) -> (Screen, Flow) {
             Some(mounted) => (load_dropped(mounted, args), Flow::Continue),
         },
         Screen::Game(mut game) => {
-            if let Err(report) = game.frame(get_frame_time() as f64) {
+            if let Err(report) = game.frame(get_frame_time() as f64, events) {
                 return (Screen::Error(ErrorScreen::new(report)), Flow::Continue);
             }
             if !(game.take_quit_request() || is_quit_requested()) {

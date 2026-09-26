@@ -1,6 +1,7 @@
--- A tour of the core lifecycle and pg.graphics.
+-- A tour of the core lifecycle, pg.graphics and input.
 
 local shapes = require("shapes")
+local controls = require("controls")
 
 local time = 0
 local sprite, frames
@@ -23,6 +24,7 @@ end
 
 function pg.update(dt)
   time = time + dt
+  controls.update(dt)
 end
 
 function pg.draw()
@@ -53,6 +55,8 @@ function pg.draw()
     "This paragraph is wrapped by printf to fit in 360 pixels and centered within that width.",
     20, 330, 360, "center")
   g.printf("Right-aligned in the window.", 0, 400, width - 20, "right")
+
+  controls.draw(20, 425)
 end
 
 function pg.resize(w, h)

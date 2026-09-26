@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** the core lifecycle and `pg.graphics` work on native and web; `games/demo` exercises them. Input and audio aren't implemented yet. See [docs/api.md](docs/api.md) for exactly what is implemented.
+**Status:** the core lifecycle, `pg.graphics` and input (`pg.keyboard`, `pg.mouse`, `pg.touch`) work on native and web; `games/demo` exercises them. Audio isn't implemented yet. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -50,10 +50,11 @@ Source layout:
 | Path | Role |
 | --- | --- |
 | `src/main.rs` | Entry point. Natively it mounts the game and runs `conf.lua` before opening the window. On the web it opens the window, then fetches `game.zip`. |
-| `src/engine.rs` | The main loop, a state machine over the no-game, game, error and blank screens. It also handles quitting. |
+| `src/engine.rs` | The main loop, a state machine over the no-game, game, error and blank screens. It also handles quitting, and drains the input queue every frame. |
 | `src/game.rs` | `Game`, which owns the Lua state and runs the lifecycle (`conf.lua`, `main.lua`, `pg.*` callbacks). `Host` is the engine state that `pg.*` functions share through `Rc<RefCell<_>>`. |
 | `src/api/` | The `pg.*` bindings, one file per module. `mod.rs` has the `Args` helper. `prelude.lua` runs first in every game and sets up `require`, `print`, the restricted `os`/`debug`, and `invoke` (`xpcall` plus a traceback). |
 | `src/graphics.rs` | The engine side of `pg.graphics`: state, the transform stack, shapes, images and text on top of macroquad. It has no Lua dependency. |
+| `src/input.rs` | The engine side of input. It reads macroquad's event queue (one subscriber for the whole run, since macroquad can't unsubscribe), turns it into Love2D-style events, and tracks the state the getters report. It normalizes wheel units, counts multi-clicks, and turns the primary touch into mouse events. It has no Lua dependency, and its event logic is unit-tested. |
 | `src/vfs.rs` | The game's read-only, case-sensitive filesystem: a directory or an in-memory zip. |
 | `src/screens.rs` | The no-game and error screens. |
 | `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |

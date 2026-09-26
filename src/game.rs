@@ -5,8 +5,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use luars::{IntoLua, Lua, LuaApi, LuaError, LuaFunction, LuaTable, SafeOption, Stdlib, Value};
 use macroquad::{
-    input::utils::{register_input_subscriber, repeat_all_miniquad_input},
-    miniquad::EventHandler,
+    input::mouse_position,
+    math::Vec2,
+    time::get_time,
     window::{screen_height, screen_width},
 };
 
@@ -14,6 +15,7 @@ use crate::{
     api::{self, SharedHost},
     conf::Conf,
     graphics::Graphics,
+    input::{Event, Input, RawEvent},
     vfs::Vfs,
 };
 
@@ -22,6 +24,7 @@ pub struct Host {
     pub vfs: Vfs,
     /// `None` until the window exists; `pg.graphics` is only installed after that.
     pub graphics: Option<Graphics>,
+    pub input: Input,
     pub delta: f64,
     pub fullscreen: bool,
     pub quit_requested: bool,
@@ -42,7 +45,8 @@ pub struct Game {
     pg: LuaTable,
     host: SharedHost,
     conf: Conf,
-    input_subscriber: Option<usize>,
+    /// Whether `start` ran, so the window exists.
+    started: bool,
     size: (f32, f32),
     lua: Lua,
 }
@@ -54,6 +58,7 @@ impl Game {
         let host = Rc::new(RefCell::new(Host {
             vfs,
             graphics: None,
+            input: Input::default(),
             delta: 0.0,
             fullscreen: false,
             quit_requested: false,
@@ -68,7 +73,7 @@ impl Game {
             pg,
             host,
             conf: Conf::default(),
-            input_subscriber: None,
+            started: false,
             size: (0.0, 0.0),
             lua,
         };
@@ -86,9 +91,10 @@ impl Game {
         {
             let mut host = self.host.borrow_mut();
             host.graphics = Some(Graphics::new());
+            host.input = Input::new(mouse_position().into());
             host.fullscreen = self.conf.window.fullscreen;
         }
-        self.input_subscriber = Some(register_input_subscriber());
+        self.started = true;
         self.size = (screen_width(), screen_height());
 
         let installed = api::install(&mut self.lua, &self.pg, &self.host);
@@ -109,12 +115,12 @@ impl Game {
         Ok(())
     }
 
-    /// Runs one frame: window events, `pg.update(dt)`, then `pg.draw()`.
-    pub fn frame(&mut self, dt: f64) -> Result<(), String> {
+    /// Runs one frame: window and input events, `pg.update(dt)`, then `pg.draw()`.
+    pub fn frame(&mut self, dt: f64, events: Vec<RawEvent>) -> Result<(), String> {
         let dt = dt.min(self.conf.maxdelta);
         self.host.borrow_mut().delta = dt;
 
-        self.dispatch_events()?;
+        self.dispatch_events(events)?;
 
         if let Some(update) = self.callback("update")? {
             let dt = self.pack(dt)?;
@@ -180,28 +186,63 @@ impl Game {
         Ok(t)
     }
 
-    /// Calls `pg.resize` and `pg.visible` for window changes since the last frame.
-    fn dispatch_events(&mut self) -> Result<(), String> {
+    /// Calls `pg.resize` if the window changed size, then the callbacks for this frame's input
+    /// and focus events, in order.
+    fn dispatch_events(&mut self, events: Vec<RawEvent>) -> Result<(), String> {
         let size = (screen_width(), screen_height());
         if size != self.size {
             self.size = size;
             if let Some(resize) = self.callback("resize")? {
-                let args = vec![self.pack(f64::from(size.0))?, self.pack(f64::from(size.1))?];
+                let args = vec![self.number(size.0)?, self.number(size.1)?];
                 self.call(&resize, args)?;
             }
         }
 
-        let mut events = WindowEvents::default();
-        if let Some(subscriber) = self.input_subscriber {
-            repeat_all_miniquad_input(&mut events, subscriber);
-        }
-        for visible in events.visible {
-            if let Some(callback) = self.callback("visible")? {
-                let visible = self.pack(visible)?;
-                self.call(&callback, vec![visible])?;
+        let events = self.host.borrow_mut().input.process(events, get_time());
+        for event in events {
+            if let Some(callback) = self.callback(event.callback())? {
+                let args = self.event_args(event)?;
+                self.call(&callback, args)?;
             }
         }
         Ok(())
+    }
+
+    /// The callback arguments for an input event, following Love2D's signatures.
+    fn event_args(&mut self, event: Event) -> Result<Vec<Value>, String> {
+        let point = |game: &mut Game, pos: Vec2| -> Result<[Value; 2], String> {
+            Ok([game.number(pos.x)?, game.number(pos.y)?])
+        };
+        Ok(match event {
+            // Key names are physical keys, so they double as Love2D's scancode argument.
+            Event::KeyPressed { key, repeat } => {
+                vec![self.pack(key)?, self.pack(key)?, self.pack(repeat)?]
+            }
+            Event::KeyReleased { key } => vec![self.pack(key)?, self.pack(key)?],
+            Event::TextInput(c) => vec![self.pack(c.to_string())?],
+            Event::MousePressed(click) | Event::MouseReleased(click) => {
+                let mut args = point(self, click.pos)?.to_vec();
+                args.push(self.pack(i64::from(click.button))?);
+                args.push(self.pack(click.touch)?);
+                args.push(self.pack(i64::from(click.presses))?);
+                args
+            }
+            Event::MouseMoved { pos, delta, touch } => {
+                let mut args = point(self, pos)?.to_vec();
+                args.extend(point(self, delta)?);
+                args.push(self.pack(touch)?);
+                args
+            }
+            Event::WheelMoved(delta) => point(self, delta)?.to_vec(),
+            Event::TouchPressed(t) | Event::TouchMoved(t) | Event::TouchReleased(t) => {
+                let mut args = vec![self.pack(t.id as i64)?];
+                args.extend(point(self, t.pos)?);
+                args.extend(point(self, t.delta)?);
+                args.push(self.pack(1_i64)?);
+                args
+            }
+            Event::Visible(visible) => vec![self.pack(visible)?],
+        })
     }
 
     /// `pg.<name>`, if the game defined it.
@@ -241,8 +282,22 @@ impl Game {
         self.lua.pack(value).map_err(|e| self.lua_error(e))
     }
 
+    /// Packs a number the way `pg.*` functions return them (see [`api::number`]).
+    fn number(&mut self, n: f32) -> Result<Value, String> {
+        self.pack(api::number(n))
+    }
+
     fn lua_error(&mut self, error: LuaError) -> String {
         self.lua.get_error_message(error).message
+    }
+}
+
+impl Drop for Game {
+    /// Gives the cursor back to the engine's screens when the game stops.
+    fn drop(&mut self) {
+        if self.started {
+            self.host.borrow_mut().input.restore_cursor();
+        }
     }
 }
 
@@ -312,24 +367,4 @@ fn field<T: luars::FromLua>(table: &LuaTable, path: &str) -> Result<T, String> {
         let got = table.get::<Value>(key).map_or("unknown", |v| v.type_name());
         format!("t.{path} has the wrong type ({got})")
     })
-}
-
-/// Collects the window events `pg.*` callbacks care about from macroquad's input queue.
-#[derive(Default)]
-struct WindowEvents {
-    visible: Vec<bool>,
-}
-
-impl EventHandler for WindowEvents {
-    fn update(&mut self) {}
-
-    fn draw(&mut self) {}
-
-    fn window_minimized_event(&mut self) {
-        self.visible.push(false);
-    }
-
-    fn window_restored_event(&mut self) {
-        self.visible.push(true);
-    }
 }

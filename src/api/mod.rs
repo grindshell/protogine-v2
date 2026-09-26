@@ -6,7 +6,10 @@
 
 mod event;
 mod graphics;
+mod keyboard;
+mod mouse;
 mod timer;
+mod touch;
 mod window;
 
 use std::{cell::RefCell, fmt::Display, rc::Rc};
@@ -27,6 +30,9 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     timer::install(lua, pg, host)?;
     window::install(lua, pg, host)?;
     event::install(lua, pg, host)?;
+    keyboard::install(lua, pg, host)?;
+    mouse::install(lua, pg, host)?;
+    touch::install(lua, pg, host)?;
     Ok(())
 }
 
