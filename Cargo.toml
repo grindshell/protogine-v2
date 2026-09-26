@@ -1,0 +1,12 @@
+[package]
+name = "protogine-v2"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["xtask"]
+
+[dependencies]
+macroquad = "0.4.16"
+kira = "0.12.4"
+luars = "0.26.3"

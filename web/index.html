@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>protogine</title>
+  <style>
+    html, body, canvas {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      position: absolute;
+      background: black;
+      z-index: 0;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" tabindex="1"></canvas>
+
+  <!-- miniquad's loader, vendored from miniquad 0.4.11 (commit 4f13d4a). Supplies the `env` imports and load(). -->
+  <script src="gl.js"></script>
+
+  <script type="module">
+    // game.js is wasm-bindgen's glue, patched by `cargo xtask web` so gl.js owns instantiation.
+    import { bindgenImports, attachBindgen } from "./game.js";
+
+    const imports = bindgenImports();
+
+    miniquad_add_plugin({
+      name: "wasm_bindgen",
+      version: 1,
+      register_plugin(importObject) {
+        Object.assign(importObject, imports);
+        // gl.js warns about every import missing from `env`, including wasm-bindgen's.
+        for (const module of Object.values(imports)) {
+          for (const [name, fn] of Object.entries(module)) importObject.env[name] ??= fn;
+        }
+      },
+      on_init() {
+        attachBindgen(wasm_exports);
+      },
+    });
+
+    load("game_bg.wasm");
+  </script>
+</body>
+</html>
