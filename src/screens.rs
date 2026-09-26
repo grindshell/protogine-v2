@@ -42,6 +42,11 @@ impl ErrorScreen {
     pub fn new(report: String) -> Self {
         // miniquad's log macros don't support inline format arguments.
         macroquad::logging::error!("{}", report);
+        // For automated tests (tests/lua.rs): exit instead of waiting on the error screen.
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("PROTOGINE_EXIT_ON_ERROR").is_some() {
+            std::process::exit(1);
+        }
         // On the web, gl.js can only fill the clipboard from inside the browser's own copy
         // event, which fires before the next frame, so stage the text now. (Natively this
         // would clobber the player's clipboard, so there it waits for Ctrl+C.)

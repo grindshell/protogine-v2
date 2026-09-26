@@ -105,14 +105,24 @@ cargo run -- games/demo      # run a game natively (a directory or .zip); no arg
 cargo build --release
 cargo clippy --workspace --all-targets
 cargo fmt --all
-cargo test
+cargo test                   # unit tests plus the Lua regression tests (opens windows; see Tests)
 cargo xtask web [--release] [--game DIR]                # web build into target/web/, packing DIR as game.zip
 cargo xtask serve [--release] [--game DIR] [--port N]   # web build, then serve at http://127.0.0.1:8080/
 ```
 
 The repo is a Cargo workspace: the root package is the engine, and `xtask/` holds the build tooling. `.claude/launch.json` has a `web` config that runs `cargo xtask serve --game games/demo`.
 
-To check API behavior quickly, write a scratch game whose `pg.load` checks results with `pcall` and `print`s them, then calls `pg.event.quit()`. Run it natively and read stdout; the process exits by itself.
+## Tests
+
+`cargo test` runs the Rust unit tests and the Lua regression tests in `tests/lua.rs`. The Lua tests run the engine binary, so each one opens a window briefly, and they need a display. The audio suite skips itself if there's no audio device.
+
+- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input` and `audio`).
+  - Suites use the helpers in `tests/lua/harness.lua`. `t.check` and `t.errors` print `ok` or `FAIL` lines, and `t.finish()` prints the summary and quits.
+  - Run one suite by hand with `cargo run -- tests/lua graphics`.
+  - When you change an API, add checks for it to its suite, asserting exact error messages. To add a suite, create `suites/<name>.lua` and a `#[test]` in `tests/lua.rs`.
+- **Error reports:** `tests/lua.rs` also writes small failing games to the temp dir and checks their error reports: tracebacks, and syntax, `conf.lua` and callback errors.
+  - These rely on `PROTOGINE_EXIT_ON_ERROR`. When it's set, the native engine logs the report to stderr and exits with status 1 instead of showing the error screen.
+- **Event handling:** input events can't be injected into a real window, so `src/input.rs` unit-tests the event logic directly.
 
 ## Conventions
 
