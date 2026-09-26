@@ -1,11 +1,11 @@
--- A tour of the core lifecycle, pg.graphics, input, audio, pg.math and pg.filesystem.
+-- A tour of the core lifecycle, pg.graphics, input, audio, pg.math, pg.filesystem and pg.system.
 
 local shapes = require("shapes")
 local scenery = require("scenery")
 local controls = require("controls")
 
 local time = 0
-local runs
+local runs, platform
 local sprite, frames
 local title_font, body_font
 
@@ -15,6 +15,13 @@ function pg.load(args)
   -- Count runs in the save directory. `read` returns nil and a message the first time.
   runs = (tonumber((pg.filesystem.read("runs.txt"))) or 0) + 1
   pg.filesystem.write("runs.txt", tostring(runs))
+
+  local power, percent = pg.system.getPowerInfo()
+  if percent then
+    power = ("%s %d%%"):format(power, percent)
+  end
+  platform = ("%s, %d cores, power %s"):format(
+    pg.system.getOS(), pg.system.getProcessorCount(), power)
 
   pg.graphics.setBackgroundColor(0.1, 0.1, 0.15)
   pg.graphics.setDefaultFilter("nearest")
@@ -47,7 +54,8 @@ function pg.draw()
   g.setFont(body_font)
   g.setColor(0.7, 0.7, 0.8)
   local height = g.getHeight()
-  g.print(("fps %d   %dx%d   run %d"):format(pg.timer.getFPS(), width, height, runs), 20, 56)
+  g.print(("fps %d   %dx%d   run %d   %s"):format(
+    pg.timer.getFPS(), width, height, runs, platform), 20, 56)
 
   shapes.draw(20, 100)
   scenery.draw(time)

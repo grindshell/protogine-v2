@@ -45,6 +45,7 @@ mod graphics;
 mod keyboard;
 mod math;
 mod mouse;
+mod system;
 mod timer;
 mod touch;
 mod window;
@@ -73,6 +74,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     audio::install(lua, pg, host)?;
     math::install(lua, pg)?;
     filesystem::install(lua, pg, host)?;
+    system::install(lua, pg)?;
     Ok(())
 }
 

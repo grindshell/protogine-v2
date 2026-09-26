@@ -94,6 +94,22 @@ fn audio() {
 }
 
 #[test]
+fn system() {
+    let os = match std::env::consts::OS {
+        "windows" => "Windows",
+        "macos" => "OS X",
+        _ => "Linux",
+    };
+    // The clipboard check replaces the clipboard's contents, so only CI runs it.
+    let clipboard = if std::env::var_os("CI").is_some() {
+        "clipboard"
+    } else {
+        "keep-clipboard"
+    };
+    suite(&suites_dir(), &["system", os, clipboard]);
+}
+
+#[test]
 fn filesystem() {
     // The second run checks what the first one saved.
     let saves = TempGame(TempGame::path("filesystem-saves"));

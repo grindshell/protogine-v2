@@ -94,7 +94,62 @@
         },
       };
     }
-    window.protogineSaves = await openSaves();
+    // pg.system's browser side. A page can only read the clipboard when the player pastes into
+    // it, so this keeps the text last pasted or set.
+    function openSystem(battery) {
+      let clipboard = "";
+      addEventListener("paste", (event) => {
+        clipboard = event.clipboardData?.getData("text/plain") ?? clipboard;
+      });
+      // The older way to copy, for when the Clipboard API is missing (over plain http) or
+      // refuses: fill in the copy event that execCommand fires.
+      const copyWithCommand = (text) => {
+        const copy = (event) => {
+          event.clipboardData.setData("text/plain", text);
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        };
+        addEventListener("copy", copy, { capture: true });
+        try {
+          return document.execCommand("copy");
+        } finally {
+          removeEventListener("copy", copy, { capture: true });
+        }
+      };
+      return {
+        processorCount: () => navigator.hardwareConcurrency ?? 1,
+        getClipboardText: () => clipboard,
+        setClipboardText(text) {
+          clipboard = text;
+          // Browsers only allow copying shortly after a click or key press.
+          const fallback = () => {
+            if (!copyWithCommand(text)) console.warn("protogine: the browser refused to copy");
+          };
+          if (navigator.clipboard) navigator.clipboard.writeText(text).catch(fallback);
+          else fallback();
+        },
+        openURL(url) {
+          // Browsers block this as a popup unless it follows a click or key press.
+          const opened = window.open(url, "_blank");
+          if (opened) opened.opener = null;
+          return opened != null;
+        },
+        vibrate(milliseconds) {
+          navigator.vibrate?.(milliseconds);
+        },
+        // Only Chromium-based browsers have the Battery Status API.
+        battery: () => battery && [
+          battery.charging ? 1 : 0, battery.level, battery.chargingTime, battery.dischargingTime,
+        ],
+      };
+    }
+
+    const [saves, battery] = await Promise.all([
+      openSaves(),
+      navigator.getBattery?.().catch(() => null),
+    ]);
+    window.protogineSaves = saves;
+    window.protogineSystem = openSystem(battery);
 
     const imports = bindgenImports();
 

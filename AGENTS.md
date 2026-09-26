@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`), `pg.audio`, `pg.math` and `pg.filesystem` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
+**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`), `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -62,6 +62,7 @@ Source layout:
 | `src/math.rs` | The engine side of `pg.math`: Love2D's random number generator, noise, triangulation and Bézier curves, ported so that seeds and noise give the same results as Love2D. It has no Lua dependency. |
 | `src/vfs.rs` | The game's read-only, case-sensitive files: a directory or an in-memory zip. It also names the game, which is the default save identity. |
 | `src/filesystem.rs` | The engine side of `pg.filesystem`: the save directory, on disk or in the web's key-value store, layered over the game's files. It has no Lua dependency, and its unit tests run against both kinds of save directory. |
+| `src/system.rs` | The engine side of `pg.system`: the platform's name, the clipboard, power, and opening URLs, with a module per platform. It calls Windows through `winapi`, macOS through `core-foundation-sys` and IOKit, and reads Linux's `/sys/class/power_supply`. It has no Lua dependency. |
 | `src/screens.rs` | The no-game and error screens. |
 | `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |
 
@@ -103,7 +104,7 @@ Requirements and notes:
 - `wasm-bindgen-cli` must match the `wasm-bindgen` version in `Cargo.lock`, currently 0.2.129. Install it with `cargo install wasm-bindgen-cli --version 0.2.129 --locked`. Reinstall whenever `Cargo.lock` bumps wasm-bindgen.
 - `web/gl.js` is vendored from miniquad at the commit that miniquad 0.4.11 was published from (`4f13d4a`). Update it whenever the miniquad version in `Cargo.lock` changes.
 - Browsers keep an `AudioContext` suspended until a user gesture. `web/index.html` wraps the `AudioContext` constructor to track the contexts cpal creates, and resumes them on every pointerdown, keydown and touchend.
-- The engine calls JavaScript through wasm-bindgen imports, like the save store in `src/filesystem.rs`. `wasm-bindgen` is a direct dependency for wasm32 only, and the loader merges its imports like any others.
+- The engine calls JavaScript through wasm-bindgen imports: the save store in `src/filesystem.rs` (`window.protogineSaves`), and the clipboard, battery and URL opening in `src/system.rs` (`window.protogineSystem`). `web/index.html` sets both up before loading the wasm. `wasm-bindgen` is a direct dependency for wasm32 only, and the loader merges its imports like any others.
 
 ## Commands
 
@@ -123,13 +124,14 @@ The repo is a Cargo workspace: the root package is the engine, and `xtask/` hold
 
 `cargo test` runs the Rust unit tests and the Lua regression tests in `tests/lua.rs`. The Lua tests run the engine binary, so each one opens a window briefly, and they need a display. The audio suite skips itself if there's no audio device.
 
-- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input`, `audio`, `math` and `filesystem`).
+- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input`, `audio`, `math`, `filesystem` and `system`).
   - Suites use the helpers in `tests/lua/harness.lua`. `t.check` and `t.errors` print `ok` or `FAIL` lines, and `t.finish()` prints the summary and quits.
   - Run one suite by hand with `cargo run -- tests/lua graphics`.
   - When you change an API, add checks for it to its suite, asserting exact error messages. To add a suite, create `suites/<name>.lua` and a `#[test]` in `tests/lua.rs`.
 - **Error reports:** `tests/lua.rs` also writes small failing games to the temp dir and checks their error reports: tracebacks, and syntax, `conf.lua` and callback errors.
   - These rely on `PROTOGINE_EXIT_ON_ERROR`. When it's set, the native engine logs the report to stderr and exits with status 1 instead of showing the error screen.
 - **Saves:** every engine run in `tests/lua.rs` sets `PROTOGINE_SAVE_DIR` to the temp dir, so tests never touch real saves. The `filesystem` suite runs twice on a fresh save directory, and the second run checks what the first one wrote.
+- **System:** the `system` suite only replaces the clipboard's contents where the `CI` environment variable is set. It never opens a URL; it only checks that disallowed ones are refused.
 - **Event handling:** input events can't be injected into a real window, so `src/input.rs` unit-tests the event logic directly.
 
 ### CI

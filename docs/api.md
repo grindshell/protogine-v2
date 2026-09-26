@@ -1,8 +1,8 @@
 # Lua API design
 
-**Status:** first design pass. It covers the core lifecycle, graphics, input, audio, math and the filesystem. System comes in a later pass.
+**Status:** first design pass. It covers the core lifecycle, graphics, input, audio, math, the filesystem and the system.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math` and `pg.filesystem`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -416,6 +416,26 @@ Save directories are:
 - **Linux:** `$XDG_DATA_HOME/protogine/<identity>`, or `~/.local/share/protogine/<identity>`
 - **Web:** the browser's IndexedDB storage for the page's site. `getSaveDirectory()` returns `"indexeddb:protogine/<identity>"`. The engine loads all saved files before the game starts. A write updates them right away, and reaches IndexedDB a moment later, so closing the tab at once can lose the last write. Browsers can clear this storage, for example in private windows.
 
+## pg.system
+
+| Function | Notes |
+| --- | --- |
+| `getOS()` | `"Windows"`, `"OS X"` (Love2D's name for macOS), `"Linux"` or `"Web"`. |
+| `getProcessorCount()` | The number of logical processors. |
+| `getClipboardText()` | The clipboard's text, or `""` if it holds none. |
+| `setClipboardText(text)` | Puts text on the clipboard. Text after a NUL character is dropped. |
+| `getPowerInfo()` | Returns `state, percent, seconds`. `state` is `"battery"` (running on battery), `"charging"`, `"charged"` (plugged in and full), `"nobattery"` or `"unknown"`. `percent` is the battery's charge from 0 to 100, and `seconds` how long it will last. Each is `nil` when unknown. |
+| `openURL(url)` | Opens an `http`, `https` or `mailto` URL in the player's browser or mail app. Returns whether it opened. Other URLs, including `file` URLs, aren't opened, since some run programs. |
+| `vibrate(seconds)` | Vibrates the device, for 0.5 seconds by default. Only browsers that support it can vibrate (mostly on Android). Elsewhere it does nothing. |
+| `hasBackgroundMusic()` | Always `false`. In Love2D it reports other apps' music on phones. |
+
+On the web, browsers limit what a page can do:
+
+- A page can't read the clipboard until the player pastes into it (with Ctrl+V or Cmd+V), so `getClipboardText` returns the text the player last pasted, or the text last set. `setClipboardText` only works just after a click or key press, and only over HTTPS or on localhost.
+- `openURL` opens a new tab. Browsers block it as a popup unless it's called just after a click or key press, and then it returns `false`.
+- `getPowerInfo` only knows about the battery in Chromium-based browsers, and reports `"unknown"` elsewhere. These browsers describe a plugged-in computer with a full battery the same way as one without a battery, so it reads as `"nobattery"`.
+- `getProcessorCount` is the browser's `navigator.hardwareConcurrency`, which some browsers cap or round.
+
 ## Divergences from Love2D
 
 - **Lua 5.5 (luars), not LuaJIT.** There's no `ffi`, no `bit` (use the native bitwise operators), no `setfenv`/`getfenv`, and no `loadstring`. `unpack` becomes `table.unpack`. Love2D libraries that rely on any of these need porting.
@@ -447,6 +467,10 @@ Save directories are:
   - `isConvex` handles straight corners anywhere. Love2D calls any polygon convex if the corner at its last vertex is straight.
   - `BezierCurve:render` and `renderSegment` accept a depth of at most 16. `renderSegment` requires `start` and `end` between 0 and 1, and swaps them if `start` is larger.
   - There's no `compress` or `decompress`, which Love2D 11 deprecated.
+- **System:**
+  - `openURL` only opens `http`, `https` and `mailto` URLs. Love2D opens any URL, including `file` URLs, which can open the save directory in a file manager but can also run programs.
+  - `getOS` returns `"Web"` on the web, as love.js does. `vibrate` only works on the web.
+  - On the web, `getClipboardText` only sees text the player pasted into the page.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.

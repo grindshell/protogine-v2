@@ -1,5 +1,5 @@
--- Input and audio: a player moved with the keyboard, click markers that blip, typed text,
--- looping music, and an event log.
+-- Input, audio and pg.system: a player moved with the keyboard, click markers that blip, typed
+-- text with copy and paste, looping music, and an event log.
 
 local controls = {}
 
@@ -61,7 +61,8 @@ function controls.draw(x, y)
   end
 
   g.setColor(0.7, 0.7, 0.8)
-  g.print("Arrows/WASD move, click anywhere, type. Tab toggles key repeat, Enter toggles music.", x, y)
+  g.print("Arrows/WASD move. Click, type, Ctrl+C/V. Tab: key repeat. Enter: music. F1: open a URL.",
+    x, y)
   g.print(("mouse %d, %d   touches %d   key repeat %s   music %s %.1f s"):format(
     math.floor(mx), math.floor(my), #pg.touch.getTouches(),
     tostring(pg.keyboard.hasKeyRepeat()), music:isPlaying() and "playing" or "paused",
@@ -74,7 +75,15 @@ end
 
 function pg.keypressed(key, _scancode, isrepeat)
   record(("keypressed %s%s"):format(key, isrepeat and " (repeat)" or ""))
-  if key == "backspace" then
+  local command = pg.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui")
+  if command and key == "c" then
+    pg.system.setClipboardText(typed)
+  elseif command and key == "v" then
+    typed = typed .. pg.system.getClipboardText():gsub("%c", " ")
+  elseif key == "f1" then
+    local opened = pg.system.openURL("https://love2d.org/wiki/love.system")
+    record(opened and "opened a URL" or "couldn't open a URL")
+  elseif key == "backspace" then
     local last = utf8.offset(typed, -1)
     if last then
       typed = typed:sub(1, last - 1)

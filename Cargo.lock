@@ -913,10 +913,12 @@ dependencies = [
 name = "protogine-v2"
 version = "0.1.0"
 dependencies = [
+ "core-foundation-sys",
  "kira",
  "luars",
  "macroquad",
  "wasm-bindgen",
+ "winapi",
  "zip",
 ]
 

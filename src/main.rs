@@ -8,6 +8,7 @@ mod graphics;
 mod input;
 mod math;
 mod screens;
+mod system;
 mod vfs;
 
 use conf::Conf;
