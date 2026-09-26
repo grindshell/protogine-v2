@@ -19,6 +19,30 @@
 <body>
   <canvas id="glcanvas" tabindex="1"></canvas>
 
+  <script>
+    // Browsers keep audio suspended until the player interacts with the page. Track every
+    // AudioContext the game creates (kira's, through cpal) and resume it on each gesture.
+    (() => {
+      const Base = window.AudioContext || window.webkitAudioContext;
+      if (!Base) return;
+      const contexts = [];
+      window.AudioContext = class extends Base {
+        constructor(...args) {
+          super(...args);
+          contexts.push(this);
+        }
+      };
+      const resume = () => {
+        for (const context of contexts) {
+          if (context.state === "suspended") context.resume();
+        }
+      };
+      for (const type of ["pointerdown", "keydown", "touchend"]) {
+        addEventListener(type, resume, { capture: true });
+      }
+    })();
+  </script>
+
   <!-- miniquad's loader, vendored from miniquad 0.4.11 (commit 4f13d4a). Supplies the `env` imports and load(). -->
   <script src="gl.js"></script>
 

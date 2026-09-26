@@ -4,6 +4,7 @@
 //! errors (`bad argument #2 to 'rectangle' (number expected, got nil)`) and variadic arguments,
 //! neither of which luars' typed callbacks support.
 
+mod audio;
 mod event;
 mod graphics;
 mod keyboard;
@@ -33,6 +34,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     keyboard::install(lua, pg, host)?;
     mouse::install(lua, pg, host)?;
     touch::install(lua, pg, host)?;
+    audio::install(lua, pg, host)?;
     Ok(())
 }
 

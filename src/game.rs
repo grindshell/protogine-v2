@@ -13,6 +13,7 @@ use macroquad::{
 
 use crate::{
     api::{self, SharedHost},
+    audio::{Audio, SharedAudio},
     conf::Conf,
     graphics::Graphics,
     input::{Event, Input, RawEvent},
@@ -25,6 +26,7 @@ pub struct Host {
     /// `None` until the window exists; `pg.graphics` is only installed after that.
     pub graphics: Option<Graphics>,
     pub input: Input,
+    pub audio: SharedAudio,
     pub delta: f64,
     pub fullscreen: bool,
     pub quit_requested: bool,
@@ -59,6 +61,7 @@ impl Game {
             vfs,
             graphics: None,
             input: Input::default(),
+            audio: Audio::new(),
             delta: 0.0,
             fullscreen: false,
             quit_requested: false,
@@ -293,10 +296,12 @@ impl Game {
 }
 
 impl Drop for Game {
-    /// Gives the cursor back to the engine's screens when the game stops.
+    /// Silences the game and gives the cursor back to the engine's screens when it stops.
     fn drop(&mut self) {
+        let mut host = self.host.borrow_mut();
+        host.audio.borrow_mut().shutdown();
         if self.started {
-            self.host.borrow_mut().input.restore_cursor();
+            host.input.restore_cursor();
         }
     }
 }

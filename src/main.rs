@@ -1,4 +1,5 @@
 mod api;
+mod audio;
 mod conf;
 mod engine;
 mod game;

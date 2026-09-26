@@ -1,8 +1,8 @@
 # Lua API design
 
-**Status:** first design pass. It covers the core lifecycle, graphics and input. Audio, filesystem, math and system come in later passes.
+**Status:** first design pass. It covers the core lifecycle, graphics, input and audio. Filesystem, math and system come in later passes.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse` and `pg.touch`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch` and `pg.audio`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -263,6 +263,35 @@ When the game stops, by an error or a quit, the engine shows the cursor again an
 
 Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` and `pg.touchreleased(...)`, which take the same arguments. `pressure` is always 1.
 
+## pg.audio
+
+| Function | Notes |
+| --- | --- |
+| `newSource(path, type)` | Returns a `Source`. `type` is `"static"` or `"stream"`. Reads OGG Vorbis, MP3, WAV and FLAC. |
+| `play(source, ...)` | Plays each source. Lists of Sources work too. Returns `true` if all of them started. |
+| `pause()` / `pause(source, ...)` | With no arguments, pauses every playing source and returns them as a list, which `play` can resume. |
+| `stop()` / `stop(source, ...)` | With no arguments, stops every source. |
+| `setVolume(volume)` / `getVolume()` | The master volume, from 0 to 1. |
+| `getActiveSourceCount()` | The number of playing sources. |
+
+`Source` methods:
+
+| Method | Notes |
+| --- | --- |
+| `play()` | Plays from the current position, or resumes a paused source. Playing a source that's already playing does nothing. Returns `false` if the sound couldn't start: there's no audio device, or 128 sounds are already playing. |
+| `pause()`, `stop()`, `isPlaying()` | `stop` rewinds. |
+| `setVolume(volume)` / `getVolume()` | Linear, from 0 to 1. Default 1. |
+| `setPitch(pitch)` / `getPitch()` | The playback speed, so `2` is twice as fast and an octave up. Must be positive. Default 1. |
+| `setLooping(loop)` / `isLooping()` | Default `false`. |
+| `seek(position, unit)` / `tell(unit)` | `unit` is `"seconds"` (the default) or `"samples"`. |
+| `getDuration(unit)` | |
+| `getType()` | `"static"` or `"stream"`. |
+| `clone()` | A new, stopped Source with the same sound and settings. The decoded audio is shared, so this is cheap. Clone a sound to play overlapping copies of it. |
+
+- A playing source keeps playing after the game drops it, until it finishes. A looping one plays until `pg.audio.stop()`.
+- When the game stops, by an error or a quit, all sound stops.
+- **Web:** browsers keep audio suspended until the player clicks, taps or presses a key. The engine resumes it on the first gesture. Sounds played before then start at that point.
+
 ## Divergences from Love2D
 
 - **Lua 5.5 (luars), not LuaJIT.** There's no `ffi`, no `bit` (use the native bitwise operators), no `setfenv`/`getfenv`, and no `loadstring`. `unpack` becomes `table.unpack`. Love2D libraries that rely on any of these need porting.
@@ -280,6 +309,10 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
   - There's no `setGrabbed`, because macroquad can only capture the cursor in a way that behaves like relative mode. Use `setRelativeMode`.
   - `pg.visible` also fires on focus changes, and there's no separate `pg.focus`.
   - There's no joystick or gamepad support.
+- **Audio:**
+  - Every Source is decoded into memory when it's created, `"stream"` ones included. kira can't stream on the web, and its native streaming hangs at the end of OGG Vorbis files after a seek (kira 0.12.4), which breaks looping music. Decoded audio takes about 21 MB per minute.
+  - There's no spatial audio (`setPosition`, the listener), no effects or filters, no queueable sources, and no `SoundData` or `Decoder` objects. `newSource` only takes a path. Tracker formats (`.xm`, `.mod`, `.it`) aren't supported.
+  - The Sources that `pg.audio.pause()` returns are `==` to the originals but are different objects, so they don't work as keys into tables keyed by the originals.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.

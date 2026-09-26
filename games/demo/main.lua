@@ -1,4 +1,4 @@
--- A tour of the core lifecycle, pg.graphics and input.
+-- A tour of the core lifecycle, pg.graphics, input and audio.
 
 local shapes = require("shapes")
 local controls = require("controls")
@@ -20,6 +20,8 @@ function pg.load(args)
   }
   title_font = pg.graphics.newFont(32)
   body_font = pg.graphics.getFont()
+
+  controls.load()
 end
 
 function pg.update(dt)

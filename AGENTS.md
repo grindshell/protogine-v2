@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** the core lifecycle, `pg.graphics` and input (`pg.keyboard`, `pg.mouse`, `pg.touch`) work on native and web; `games/demo` exercises them. Audio isn't implemented yet. See [docs/api.md](docs/api.md) for exactly what is implemented.
+**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`) and `pg.audio` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -43,7 +43,7 @@ Trade-offs:
 
 - **Lua API:** specified in [docs/api.md](docs/api.md). It's Love2D-shaped under a single global, `pg`, with callbacks like `pg.update(dt)` and modules like `pg.graphics`. This Lua-facing API is the product. Update the doc in the same change as any API change, and record every divergence from Love2D there.
 - **Files are mounted up front:** native reads the game directory or `.zip`, and the web fetches `game.zip` before any Lua runs. Every file API, and `require`, is synchronous on every platform.
-- **Audio (planned):** the host owns kira's `AudioManager`. Sounds and handles reach Lua as userdata.
+- **Audio:** each game owns a kira `AudioManager`, created on first use and dropped when the game stops. Sources are decoded into memory up front, even `"stream"` ones. Don't switch to kira's `StreamingSoundData`: in kira 0.12.4, its decode thread spins forever at the end of an OGG Vorbis file after a seek, so the sound hangs just before the end and looping breaks. MP3, FLAC and WAV streams are fine. Streaming also doesn't exist on wasm.
 
 Source layout:
 
@@ -55,6 +55,7 @@ Source layout:
 | `src/api/` | The `pg.*` bindings, one file per module. `mod.rs` has the `Args` helper. `prelude.lua` runs first in every game and sets up `require`, `print`, the restricted `os`/`debug`, and `invoke` (`xpcall` plus a traceback). |
 | `src/graphics.rs` | The engine side of `pg.graphics`: state, the transform stack, shapes, images and text on top of macroquad. It has no Lua dependency. |
 | `src/input.rs` | The engine side of input. It reads macroquad's event queue (one subscriber for the whole run, since macroquad can't unsubscribe), turns it into Love2D-style events, and tracks the state the getters report. It normalizes wheel units, counts multi-clicks, and turns the primary touch into mouse events. It has no Lua dependency, and its event logic is unit-tested. |
+| `src/audio.rs` | The engine side of `pg.audio`: the lazily created `AudioManager`, and `Source`, which tracks the play, pause and stop state the game asked for, since kira applies commands a block late. It also keeps playing sources reachable after the game drops them, like Love2D's source pool. It has no Lua dependency. |
 | `src/vfs.rs` | The game's read-only, case-sensitive filesystem: a directory or an in-memory zip. |
 | `src/screens.rs` | The no-game and error screens. |
 | `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |
@@ -95,7 +96,7 @@ Requirements and notes:
 
 - `wasm-bindgen-cli` must match the `wasm-bindgen` version in `Cargo.lock`, currently 0.2.129. Install it with `cargo install wasm-bindgen-cli --version 0.2.129 --locked`. Reinstall whenever `Cargo.lock` bumps wasm-bindgen.
 - `web/gl.js` is vendored from miniquad at the commit that miniquad 0.4.11 was published from (`4f13d4a`). Update it whenever the miniquad version in `Cargo.lock` changes.
-- Browsers keep an `AudioContext` suspended until a user gesture. Resuming audio on the first click or keypress still needs handling.
+- Browsers keep an `AudioContext` suspended until a user gesture. `web/index.html` wraps the `AudioContext` constructor to track the contexts cpal creates, and resumes them on every pointerdown, keydown and touchend.
 
 ## Commands
 

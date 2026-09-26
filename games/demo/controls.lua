@@ -1,4 +1,5 @@
--- Input: a player moved with the keyboard, click markers, typed text, and an event log.
+-- Input and audio: a player moved with the keyboard, click markers that blip, typed text,
+-- looping music, and an event log.
 
 local controls = {}
 
@@ -6,10 +7,18 @@ local player = { x = 600, y = 500, speed = 240 }
 local markers = {}
 local typed = ""
 local log = {}
+local blip, music
 
 local function record(text)
   table.insert(log, 1, text)
   log[6] = nil
+end
+
+function controls.load()
+  blip = pg.audio.newSource("blip.wav", "static")
+  music = pg.audio.newSource("music.ogg", "stream")
+  music:setLooping(true)
+  music:setVolume(0.5)
 end
 
 function controls.update(dt)
@@ -52,10 +61,11 @@ function controls.draw(x, y)
   end
 
   g.setColor(0.7, 0.7, 0.8)
-  g.print("Arrows/WASD move, click anywhere, type. Tab toggles key repeat.", x, y)
-  g.print(("mouse %d, %d   touches %d   key repeat %s"):format(
+  g.print("Arrows/WASD move, click anywhere, type. Tab toggles key repeat, Enter toggles music.", x, y)
+  g.print(("mouse %d, %d   touches %d   key repeat %s   music %s %.1f s"):format(
     math.floor(mx), math.floor(my), #pg.touch.getTouches(),
-    tostring(pg.keyboard.hasKeyRepeat())), x, y + 20)
+    tostring(pg.keyboard.hasKeyRepeat()), music:isPlaying() and "playing" or "paused",
+    music:tell()), x, y + 20)
   g.setColor(1, 1, 1)
   g.print("> " .. typed, x, y + 44)
   g.setColor(0.6, 0.6, 0.7)
@@ -71,6 +81,12 @@ function pg.keypressed(key, _scancode, isrepeat)
     end
   elseif key == "tab" then
     pg.keyboard.setKeyRepeat(not pg.keyboard.hasKeyRepeat())
+  elseif key == "return" and not isrepeat then
+    if music:isPlaying() then
+      music:pause()
+    else
+      music:play()
+    end
   end
 end
 
@@ -86,6 +102,11 @@ function pg.mousepressed(x, y, button, istouch, presses)
   record(("mousepressed %d at %d, %d%s, presses %d"):format(
     button, math.floor(x), math.floor(y), istouch and " (touch)" or "", presses))
   markers[#markers + 1] = { x = x, y = y, presses = presses, age = 0 }
+
+  -- A clone per click lets blips overlap; multi-clicks go up in pitch.
+  local sound = blip:clone()
+  sound:setPitch(2 ^ ((presses - 1) / 4))
+  sound:play()
 end
 
 function pg.mousereleased(_x, _y, button)
