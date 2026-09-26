@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`) and `pg.audio` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
+**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`), `pg.audio` and `pg.math` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -32,6 +32,8 @@ Trade-offs:
   - Rename methods to Love2D names with `#[lua(name = "getWidth")]`.
   - Don't give a method the Rust name `type_name`, because it collides with `UserDataTrait::type_name`.
   - Reading an unknown field on userdata raises an error instead of returning nil.
+  - `pub` fields become Lua fields, so keep a userdata's fields private or `pub(super)`.
+  - `#[lua_methods]` can't take variadic arguments, return `self`, or give standard argument errors. For those, use the `methods!` macro in `src/api/mod.rs` instead, which writes the methods against `Args`. It replaces the method lookup that the derive calls; `src/api/math.rs` uses it.
 - **Errors carry no message.** `LuaError` is a bare enum, and the message lives in VM state. Call `lua.get_error_message(e)` right away; it can only be read once.
 - **Typed callbacks** (`create_function`) can't take a variable number of arguments. Their argument errors don't name the function, and if one returns `LuaResult`, the error message is lost ("Runtime Error"). `pg.*` functions therefore use raw callbacks through `api::Args` (see `src/api/mod.rs`).
 - `LuaTable`, `LuaFunction` and `Value` hold raw pointers into the VM, so drop them before the `Lua` that owns them. `Game` declares `lua` as its last field for this reason.
@@ -52,10 +54,11 @@ Source layout:
 | `src/main.rs` | Entry point. Natively it mounts the game and runs `conf.lua` before opening the window. On the web it opens the window, then fetches `game.zip`. |
 | `src/engine.rs` | The main loop, a state machine over the no-game, game, error and blank screens. It also handles quitting, and drains the input queue every frame. |
 | `src/game.rs` | `Game`, which owns the Lua state and runs the lifecycle (`conf.lua`, `main.lua`, `pg.*` callbacks). `Host` is the engine state that `pg.*` functions share through `Rc<RefCell<_>>`. |
-| `src/api/` | The `pg.*` bindings, one file per module. `mod.rs` has the `Args` helper. `prelude.lua` runs first in every game and sets up `require`, `print`, the restricted `os`/`debug`, and `invoke` (`xpcall` plus a traceback). |
+| `src/api/` | The `pg.*` bindings, one file per module. `mod.rs` has the `Args` helper and the `methods!` macro. `prelude.lua` runs first in every game and sets up `require`, `print`, the restricted `os`/`debug`, and `invoke` (`xpcall` plus a traceback). |
 | `src/graphics.rs` | The engine side of `pg.graphics`: state, the transform stack, shapes, images and text on top of macroquad. It has no Lua dependency. |
 | `src/input.rs` | The engine side of input. It reads macroquad's event queue (one subscriber for the whole run, since macroquad can't unsubscribe), turns it into Love2D-style events, and tracks the state the getters report. It normalizes wheel units, counts multi-clicks, and turns the primary touch into mouse events. It has no Lua dependency, and its event logic is unit-tested. |
 | `src/audio.rs` | The engine side of `pg.audio`: the lazily created `AudioManager`, and `Source`, which tracks the play, pause and stop state the game asked for, since kira applies commands a block late. It also keeps playing sources reachable after the game drops them, like Love2D's source pool. It has no Lua dependency. |
+| `src/math.rs` | The engine side of `pg.math`: Love2D's random number generator, noise, triangulation and Bézier curves, ported so that seeds and noise give the same results as Love2D. It has no Lua dependency. |
 | `src/vfs.rs` | The game's read-only, case-sensitive filesystem: a directory or an in-memory zip. |
 | `src/screens.rs` | The no-game and error screens. |
 | `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |
@@ -116,7 +119,7 @@ The repo is a Cargo workspace: the root package is the engine, and `xtask/` hold
 
 `cargo test` runs the Rust unit tests and the Lua regression tests in `tests/lua.rs`. The Lua tests run the engine binary, so each one opens a window briefly, and they need a display. The audio suite skips itself if there's no audio device.
 
-- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input` and `audio`).
+- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input`, `audio` and `math`).
   - Suites use the helpers in `tests/lua/harness.lua`. `t.check` and `t.errors` print `ok` or `FAIL` lines, and `t.finish()` prints the summary and quits.
   - Run one suite by hand with `cargo run -- tests/lua graphics`.
   - When you change an API, add checks for it to its suite, asserting exact error messages. To add a suite, create `suites/<name>.lua` and a `#[test]` in `tests/lua.rs`.

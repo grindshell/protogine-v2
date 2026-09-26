@@ -74,6 +74,11 @@ fn input() {
 }
 
 #[test]
+fn math() {
+    suite(&suites_dir(), &["math"]);
+}
+
+#[test]
 fn audio() {
     suite(&suites_dir(), &["audio"]);
 }

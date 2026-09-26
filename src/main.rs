@@ -5,6 +5,7 @@ mod engine;
 mod game;
 mod graphics;
 mod input;
+mod math;
 mod screens;
 mod vfs;
 

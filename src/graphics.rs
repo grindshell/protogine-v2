@@ -25,8 +25,8 @@ pub enum Align {
     Right,
 }
 
-/// Translation, rotation, scale and origin offset for drawing a single object, as taken by
-/// `pg.graphics.draw`, `print` and `printf`.
+/// Position, rotation, scale, origin offset and shear, as taken by `pg.graphics.draw`, `print`
+/// and `printf`, and by `pg.math.newTransform`.
 #[derive(Clone, Copy)]
 pub struct Placement {
     pub x: f32,
@@ -36,15 +36,44 @@ pub struct Placement {
     pub sy: f32,
     pub ox: f32,
     pub oy: f32,
+    pub kx: f32,
+    pub ky: f32,
 }
 
 impl Placement {
-    fn matrix(&self) -> Mat4 {
-        Mat4::from_translation(vec3(self.x, self.y, 0.0))
-            * Mat4::from_rotation_z(self.r)
-            * Mat4::from_scale(vec3(self.sx, self.sy, 1.0))
-            * Mat4::from_translation(vec3(-self.ox, -self.oy, 0.0))
+    /// Translate, rotate, scale, shear, then offset by the origin, multiplied out as Love2D does.
+    pub fn matrix(&self) -> Mat4 {
+        let Placement {
+            x,
+            y,
+            r,
+            sx,
+            sy,
+            ox,
+            oy,
+            kx,
+            ky,
+        } = *self;
+        let (s, c) = r.sin_cos();
+        let (a, b) = (c * sx - ky * s * sy, s * sx + ky * c * sy);
+        let (cc, d) = (kx * c * sx - s * sy, kx * s * sx + c * sy);
+        Mat4::from_cols(
+            vec4(a, b, 0.0, 0.0),
+            vec4(cc, d, 0.0, 0.0),
+            Vec4::Z,
+            vec4(x - ox * a - oy * cc, y - ox * b - oy * d, 0.0, 1.0),
+        )
     }
+}
+
+/// Shears x by `kx` times y, and y by `ky` times x.
+pub fn shear_matrix(kx: f32, ky: f32) -> Mat4 {
+    Mat4::from_cols(
+        vec4(1.0, ky, 0.0, 0.0),
+        vec4(kx, 1.0, 0.0, 0.0),
+        Vec4::Z,
+        Vec4::W,
+    )
 }
 
 pub struct Image {
@@ -228,6 +257,18 @@ impl Graphics {
         self.transform *= Mat4::from_scale(vec3(sx, sy, 1.0));
     }
 
+    pub fn shear(&mut self, kx: f32, ky: f32) {
+        self.transform *= shear_matrix(kx, ky);
+    }
+
+    pub fn apply_transform(&mut self, matrix: Mat4) {
+        self.transform *= matrix;
+    }
+
+    pub fn replace_transform(&mut self, matrix: Mat4) {
+        self.transform = matrix;
+    }
+
     pub fn transform_point(&self, x: f32, y: f32) -> (f32, f32) {
         let p = self.transform.transform_point3(vec3(x, y, 0.0));
         (p.x, p.y)
@@ -288,8 +329,9 @@ impl Graphics {
 
     // ---- images and text ----
 
-    pub fn draw_texture(&self, texture: &Texture2D, source: Option<Rect>, placement: &Placement) {
-        self.with_transform(self.transform * placement.matrix(), || {
+    /// Draws with `local` (a placement or a Transform's matrix) on top of the current transform.
+    pub fn draw_texture(&self, texture: &Texture2D, source: Option<Rect>, local: Mat4) {
+        self.with_transform(self.transform * local, || {
             draw_texture_ex(
                 texture,
                 0.0,
@@ -303,19 +345,19 @@ impl Graphics {
         });
     }
 
-    pub fn print(&self, text: &str, placement: &Placement) {
+    pub fn print(&self, text: &str, local: Mat4) {
         let font = &self.font;
-        self.with_transform(self.transform * placement.matrix(), || {
+        self.with_transform(self.transform * local, || {
             for (i, line) in text.split('\n').enumerate() {
                 font.draw_line(line, 0.0, i, self.color);
             }
         });
     }
 
-    pub fn printf(&self, text: &str, limit: f32, align: Align, placement: &Placement) {
+    pub fn printf(&self, text: &str, limit: f32, align: Align, local: Mat4) {
         let font = &self.font;
         let wrapped = wrap_text(text, font.font.as_ref(), font.size, 1.0, limit.max(1.0));
-        self.with_transform(self.transform * placement.matrix(), || {
+        self.with_transform(self.transform * local, || {
             for (i, line) in wrapped.split('\n').enumerate() {
                 let x = match align {
                     Align::Left => 0.0,

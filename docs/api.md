@@ -1,8 +1,8 @@
 # Lua API design
 
-**Status:** first design pass. It covers the core lifecycle, graphics, input and audio. Filesystem, math and system come in later passes.
+**Status:** first design pass. It covers the core lifecycle, graphics, input, audio and math. Filesystem and system come in later passes.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch` and `pg.audio`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio` and `pg.math`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -149,8 +149,9 @@ On the error screen, Ctrl+C (Cmd+C on macOS) copies the message and traceback to
 | --- | --- |
 | `newImage(path)` | Returns an `Image`. Supports PNG and TGA. |
 | `newQuad(x, y, w, h)` | Returns a `Quad`, a pixel rectangle within an image, used for sprite sheets. |
-| `draw(drawable, x, y, r, sx, sy, ox, oy)` | Defaults: `x, y, r = 0`, `sx = 1`, `sy = sx`, `ox, oy = 0`. `ox, oy` set the origin for rotation and scaling. A negative scale flips. |
-| `draw(image, quad, x, y, r, sx, sy, ox, oy)` | Draws just the part of `image` under `quad`. |
+| `draw(drawable, x, y, r, sx, sy, ox, oy, kx, ky)` | Defaults: `x, y, r = 0`, `sx = 1`, `sy = sx`, `ox, oy, kx, ky = 0`. `ox, oy` set the origin for rotation and scaling. A negative scale flips. `kx, ky` shear. |
+| `draw(drawable, transform)` | Places the drawable with a [`Transform`](#transforms-1) instead. |
+| `draw(image, quad, x, y, ...)` / `draw(image, quad, transform)` | Draws just the part of `image` under `quad`. |
 
 - `Image` methods: `getWidth()`, `getHeight()`, `getDimensions()`, `setFilter(filter)`, `getFilter()`.
 - `Quad` methods: `getViewport()` returns `x, y, w, h`. `setViewport(x, y, w, h)` changes it.
@@ -161,8 +162,8 @@ On the error screen, Ctrl+C (Cmd+C on macOS) copies the message and traceback to
 | --- | --- |
 | `newFont(path, size)` | Returns a `Font` loaded from a TTF file. |
 | `newFont(size)` | The built-in font at `size`. The default font is the built-in font at size 16. |
-| `print(text, x, y, r, sx, sy, ox, oy)` | Honors `\n`. Converts numbers with `tostring`. |
-| `printf(text, x, y, limit, align, r, sx, sy, ox, oy)` | Wraps at `limit` pixels. `align` is `"left"` (the default), `"center"` or `"right"`. |
+| `print(text, x, y, r, sx, sy, ox, oy, kx, ky)` / `print(text, transform)` | Honors `\n`. Converts numbers with `tostring`. |
+| `printf(text, x, y, limit, align, r, sx, sy, ox, oy, kx, ky)` / `printf(text, transform, limit, align)` | Wraps at `limit` pixels. `align` is `"left"` (the default), `"center"` or `"right"`. |
 
 `Font` methods: `getWidth(text)`, `getHeight()`, `setFilter(filter)`, `getFilter()`.
 
@@ -175,6 +176,9 @@ Every `Font` made from the built-in font shares one glyph atlas, so `setFilter` 
 | `push()`, `pop()` | Save and restore the transform. The stack holds at most 64 entries; overflowing it is an error. |
 | `origin()` | Resets to the identity. |
 | `translate(dx, dy)`, `rotate(angle)`, `scale(sx, sy)` | `sy` defaults to `sx`. |
+| `shear(kx, ky)` | Shears x by `kx` times y, and y by `ky` times x. |
+| `applyTransform(transform)` | Applies a [`Transform`](#transforms-1) on top of the current transform. |
+| `replaceTransform(transform)` | Makes a `Transform` the current transform. |
 | `transformPoint(x, y)`, `inverseTransformPoint(x, y)` | Convert between local and screen coordinates, for example for mouse picking. |
 
 ### Later passes
@@ -292,6 +296,93 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
 - When the game stops, by an error or a quit, all sound stops.
 - **Web:** browsers keep audio suspended until the player clicks, taps or presses a key. The engine resumes it on the first gesture. Sounds played before then start at that point.
 
+## pg.math
+
+### Random numbers
+
+| Function | Notes |
+| --- | --- |
+| `random()` | A number from 0 up to, but not including, 1. |
+| `random(max)`, `random(min, max)` | An integer from 1 (or `min`) to `max`, inclusive. An empty range is an error. |
+| `randomNormal(stddev, mean)` | A normally distributed number. `stddev` defaults to 1 and `mean` to 0. |
+| `setRandomSeed(seed)` / `setRandomSeed(low, high)` | `seed` is a 64-bit integer, or its low and high 32 bits. |
+| `getRandomSeed()` | Returns `low, high`. |
+| `setRandomState(state)` / `getRandomState()` | The generator's whole state, as a string. Restore a saved state to repeat the numbers from that point. |
+| `newRandomGenerator()` / `newRandomGenerator(seed)` / `newRandomGenerator(low, high)` | Returns a `RandomGenerator`, a generator of its own. Without a seed, it starts from the same fixed seed every run. |
+
+`pg.math` has its own generator, seeded from the clock when the game starts. `RandomGenerator` has the same functions as methods, named without "Random": `random`, `randomNormal`, `setSeed`, `getSeed`, `setState` and `getState`.
+
+The generator is Love2D's (xorshift64*), so a seed gives the same numbers as it does in Love2D. Lua's `math.random` is a separate generator.
+
+### Noise
+
+| Function | Notes |
+| --- | --- |
+| `noise(x)`, `noise(x, y)`, `noise(x, y, z)`, `noise(x, y, z, w)` | Smooth noise from 0 to 1, always the same for the same arguments. It's simplex noise in 1 and 2 dimensions and Perlin noise in 3 and 4, as in Love2D. |
+
+Noise changes over distances of about 1, and in 1, 3 and 4 dimensions it's 0.5 at whole-number coordinates. Scale coordinates down to get smooth variation, for example `noise(x / 100)`.
+
+### Color
+
+| Function | Notes |
+| --- | --- |
+| `gammaToLinear(r, g, b)` / `linearToGamma(r, g, b)` | Convert between sRGB and linear RGB. They also take one component, or a table. Components are clamped to 0–1. A fourth component, alpha, is only clamped, since alpha is always linear. They return as many components as they're given. |
+| `colorToBytes(r, g, b, a)` | Converts components from 0–1 to integers from 0 to 255. It also takes a table, and `a` is optional. |
+| `colorFromBytes(r, g, b, a)` | The reverse of `colorToBytes`. |
+
+### Polygons
+
+Both functions take vertices the way `pg.graphics.polygon` does: `x1, y1, x2, y2, ...` or a table of them.
+
+| Function | Notes |
+| --- | --- |
+| `isConvex(vertices)` | Whether every corner turns the same way. `false` for fewer than three vertices. |
+| `triangulate(vertices)` | Splits a polygon, convex or not, into triangles, and returns a list of `{x1, y1, x2, y2, x3, y3}` tables. To fill a concave polygon, draw each triangle with `pg.graphics.polygon("fill", triangle)`. It may fail on a polygon whose edges cross. |
+
+### Bézier curves
+
+| Function | Notes |
+| --- | --- |
+| `newBezierCurve(vertices)` | Returns a `BezierCurve` with the given control points, which it takes the way `pg.graphics.polygon` takes vertices. |
+
+`BezierCurve` methods:
+
+| Method | Notes |
+| --- | --- |
+| `evaluate(t)` | Returns the point at `t`, from 0 to 1. |
+| `render(depth)` | Returns points along the curve as a flat list, `{x1, y1, x2, y2, ...}`, ready for `pg.graphics.line`. Each level of `depth` doubles the number of segments. The default is 5, and the maximum is 16. |
+| `renderSegment(start, end, depth)` | The rendered points from `start` to `end`, each from 0 to 1. |
+| `getSegment(t1, t2)` | Returns a new curve that follows this one from `t1` to `t2`. |
+| `getDerivative()` | Returns the derivative as a new curve, one degree lower. |
+| `getDegree()`, `getControlPointCount()` | The degree is one less than the number of control points. |
+| `getControlPoint(i)`, `setControlPoint(i, x, y)`, `removeControlPoint(i)` | Indices start at 1. Negative ones count back from the end, so `-1` is the last point. Other indices wrap around, as in Love2D. |
+| `insertControlPoint(x, y, i)` | Inserts a point before the one at `i`. `i` can be one past the end, to append. The default, `-1`, inserts before the last point, as in Love2D. |
+| `translate(dx, dy)`, `rotate(angle, ox, oy)`, `scale(s, ox, oy)` | Move the control points. `ox, oy` is the center of rotation or scaling, 0, 0 by default. |
+
+`evaluate`, `render`, `renderSegment` and `getSegment` need at least two control points.
+
+### Transforms
+
+| Function | Notes |
+| --- | --- |
+| `newTransform()` / `newTransform(x, y, r, sx, sy, ox, oy, kx, ky)` | Returns a `Transform`: the identity, or a placement that takes the same arguments and defaults as `pg.graphics.draw`. |
+
+A `Transform` holds a transformation, which `pg.graphics.applyTransform`, `replaceTransform`, `draw`, `print` and `printf` accept. Its methods:
+
+| Method | Notes |
+| --- | --- |
+| `translate(dx, dy)`, `rotate(angle)`, `scale(sx, sy)`, `shear(kx, ky)` | Like the `pg.graphics` functions of the same names. |
+| `setTransformation(x, y, r, sx, sy, ox, oy, kx, ky)` | Replaces the transformation with a placement. |
+| `reset()` | Replaces the transformation with the identity. |
+| `apply(other)` | Applies `other` on top, the way `pg.graphics.applyTransform` does. |
+| `transformPoint(x, y)`, `inverseTransformPoint(x, y)` | |
+| `inverse()`, `clone()` | Return new Transforms. |
+| `getMatrix()` | Returns the 16 elements of the 4x4 matrix, row by row. |
+| `setMatrix(layout, e1, ..., e16)` | `layout` is `"row"` or `"column"`, and can be left out for `"row"`. The elements can also be given as one table of 16, or as a table of four tables of four. |
+| `isAffine2DTransform()` | Whether the matrix only translates, rotates, scales and shears in 2D. |
+
+The methods that change a Transform return it, so calls chain: `t:translate(10, 0):rotate(1)`. `a * b` returns a new Transform that applies `b`, then `a`.
+
 ## Divergences from Love2D
 
 - **Lua 5.5 (luars), not LuaJIT.** There's no `ffi`, no `bit` (use the native bitwise operators), no `setfenv`/`getfenv`, and no `loadstring`. `unpack` becomes `table.unpack`. Love2D libraries that rely on any of these need porting.
@@ -313,6 +404,12 @@ Callbacks: `pg.touchpressed(id, x, y, dx, dy, pressure)`, `pg.touchmoved(...)` a
   - Every Source is decoded into memory when it's created, `"stream"` ones included. kira can't stream on the web, and its native streaming hangs at the end of OGG Vorbis files after a seek (kira 0.12.4), which breaks looping music. Decoded audio takes about 21 MB per minute.
   - There's no spatial audio (`setPosition`, the listener), no effects or filters, no queueable sources, and no `SoundData` or `Decoder` objects. `newSource` only takes a path. Tracker formats (`.xm`, `.mod`, `.it`) aren't supported.
   - The Sources that `pg.audio.pause()` returns are `==` to the originals but are different objects, so they don't work as keys into tables keyed by the originals.
+- **Math:**
+  - `random(max)` with `max` below 1, and `random(min, max)` with `min` above `max`, raise `interval is empty`, as Lua's `math.random` does. Love2D returns a number anyway.
+  - `noise` is computed in double precision, so its values differ slightly from Love2D's single-precision ones, most of all far from the origin.
+  - `isConvex` handles straight corners anywhere. Love2D calls any polygon convex if the corner at its last vertex is straight.
+  - `BezierCurve:render` and `renderSegment` accept a depth of at most 16. `renderSegment` requires `start` and `end` between 0 and 1, and swaps them if `start` is larger.
+  - There's no `compress` or `decompress`, which Love2D 11 deprecated.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.

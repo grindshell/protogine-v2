@@ -1,6 +1,7 @@
--- A tour of the core lifecycle, pg.graphics, input and audio.
+-- A tour of the core lifecycle, pg.graphics, input, audio and pg.math.
 
 local shapes = require("shapes")
+local scenery = require("scenery")
 local controls = require("controls")
 
 local time = 0
@@ -21,6 +22,7 @@ function pg.load(args)
   title_font = pg.graphics.newFont(32)
   body_font = pg.graphics.getFont()
 
+  scenery.load()
   controls.load()
 end
 
@@ -42,6 +44,7 @@ function pg.draw()
   g.print(("fps %d   %dx%d"):format(pg.timer.getFPS(), g.getDimensions()), 20, 56)
 
   shapes.draw(20, 100)
+  scenery.draw(time)
 
   -- A sprite spinning around its center, animated with quads.
   g.push()

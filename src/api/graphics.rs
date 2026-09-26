@@ -3,9 +3,9 @@
 use std::rc::Rc;
 
 use luars::{Lua, LuaResult, LuaTable, LuaUserData, LuaValue, lua_methods};
-use macroquad::prelude::{Color, FilterMode, Rect, screen_height, screen_width};
+use macroquad::prelude::{Color, FilterMode, Mat4, Rect, screen_height, screen_width};
 
-use super::{Args, Module, SharedHost, number};
+use super::{Args, Module, SharedHost, math::Transform, number};
 use crate::graphics::{self as gfx, Align, DEFAULT_FONT_SIZE, Graphics, Placement, ShapeMode};
 
 const SHAPE_MODES: &[(&str, ShapeMode)] = &[("fill", ShapeMode::Fill), ("line", ShapeMode::Line)];
@@ -279,8 +279,8 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
             Some(rect) => (Some(rect), 3),
             None => (None, 2),
         };
-        let placement = placement(args, first)?;
-        g.draw_texture(&image, source, &placement);
+        let local = local_transform(args, first)?;
+        g.draw_texture(&image, source, local);
         Ok(0)
     });
 
@@ -321,22 +321,29 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     }
     function!("print", |args, g| {
         let text = args.string(1)?;
-        let placement = placement(args, 2)?;
-        g.print(&text, &placement);
+        let local = local_transform(args, 2)?;
+        g.print(&text, local);
         Ok(0)
     });
     function!("printf", |args, g| {
         let text = args.string(1)?;
-        let (x, y, limit) = (args.f32(2)?, args.f32(3)?, args.f32(4)?);
-        let align = if args.get(5).is_some() {
-            args.option(5, "align mode", ALIGNS)?
+        // Either `x, y, limit, align, r, sx, ...` or `transform, limit, align`.
+        let given = transform(args, 2);
+        let limit_at = if given.is_some() { 3 } else { 4 };
+        let limit = args.f32(limit_at)?;
+        let align = if args.get(limit_at + 1).is_some() {
+            args.option(limit_at + 1, "align mode", ALIGNS)?
         } else {
             Align::Left
         };
-        let mut placement = placement(args, 6)?;
-        placement.x = x;
-        placement.y = y;
-        g.printf(&text, limit, align, &placement);
+        let local = match given {
+            Some(matrix) => matrix,
+            None => {
+                let (x, y) = (args.f32(2)?, args.f32(3)?);
+                placement_at(args, x, y, 6)?.matrix()
+            }
+        };
+        g.printf(&text, limit, align, local);
         Ok(0)
     });
 
@@ -366,6 +373,20 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
         let sx = args.f32(1)?;
         let sy = args.opt_f32(2, sx)?;
         g.scale(sx, sy);
+        Ok(0)
+    });
+    function!("shear", |args, g| {
+        g.shear(args.f32(1)?, args.f32(2)?);
+        Ok(0)
+    });
+    function!("applyTransform", |args, g| {
+        let matrix = args.userdata(1, "Transform", |t: &Transform| t.matrix)?;
+        g.apply_transform(matrix);
+        Ok(0)
+    });
+    function!("replaceTransform", |args, g| {
+        let matrix = args.userdata(1, "Transform", |t: &Transform| t.matrix)?;
+        g.replace_transform(matrix);
         Ok(0)
     });
     function!("transformPoint", |args, g| {
@@ -408,15 +429,22 @@ fn color_values(c: Color) -> (LuaValue, LuaValue, LuaValue, LuaValue) {
     (number(c.r), number(c.g), number(c.b), number(c.a))
 }
 
-/// `x, y, r, sx, sy, ox, oy` starting at `start`, with Love2D's defaults.
-fn placement(args: &mut Args, start: usize) -> LuaResult<Placement> {
+/// `x, y, r, sx, sy, ox, oy, kx, ky` starting at `start`, with Love2D's defaults.
+pub fn placement(args: &mut Args, start: usize) -> LuaResult<Placement> {
     let x = args.opt_f32(start, 0.0)?;
     let y = args.opt_f32(start + 1, 0.0)?;
-    let r = args.opt_f32(start + 2, 0.0)?;
-    let sx = args.opt_f32(start + 3, 1.0)?;
-    let sy = args.opt_f32(start + 4, sx)?;
-    let ox = args.opt_f32(start + 5, 0.0)?;
-    let oy = args.opt_f32(start + 6, 0.0)?;
+    placement_at(args, x, y, start + 2)
+}
+
+/// A placement at `x, y`, with `r, sx, sy, ox, oy, kx, ky` starting at `start`.
+fn placement_at(args: &mut Args, x: f32, y: f32, start: usize) -> LuaResult<Placement> {
+    let r = args.opt_f32(start, 0.0)?;
+    let sx = args.opt_f32(start + 1, 1.0)?;
+    let sy = args.opt_f32(start + 2, sx)?;
+    let ox = args.opt_f32(start + 3, 0.0)?;
+    let oy = args.opt_f32(start + 4, 0.0)?;
+    let kx = args.opt_f32(start + 5, 0.0)?;
+    let ky = args.opt_f32(start + 6, 0.0)?;
     Ok(Placement {
         x,
         y,
@@ -425,7 +453,22 @@ fn placement(args: &mut Args, start: usize) -> LuaResult<Placement> {
         sy,
         ox,
         oy,
+        kx,
+        ky,
     })
+}
+
+/// Where to draw one object: a Transform at `start`, or a placement starting there.
+fn local_transform(args: &mut Args, start: usize) -> LuaResult<Mat4> {
+    match transform(args, start) {
+        Some(matrix) => Ok(matrix),
+        None => Ok(placement(args, start)?.matrix()),
+    }
+}
+
+/// The matrix of the Transform at `index`, if that argument is one.
+fn transform(args: &Args, index: usize) -> Option<Mat4> {
+    args.with_userdata(index, |t: &Transform| t.matrix)
 }
 
 fn font_size(args: &mut Args, index: usize) -> LuaResult<u16> {

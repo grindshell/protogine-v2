@@ -106,7 +106,31 @@ function suite.run()
   g.rotate(math.pi / 2)
   px, py = g.transformPoint(1, 0)
   t.check("rotate", t.near(px, 0) and t.near(py, 1), px .. "," .. py)
+  g.origin()
+  g.shear(1, 0)
+  px, py = g.transformPoint(0, 10)
+  t.check("shear", px == 10 and py == 10, px .. "," .. py)
+
+  -- Transform objects
+  local tf = pg.math.newTransform(10, 20)
+  g.origin()
+  g.applyTransform(tf)
+  g.applyTransform(tf)
+  px, py = g.transformPoint(0, 0)
+  t.check("applyTransform", px == 20 and py == 40, px .. "," .. py)
+  g.replaceTransform(pg.math.newTransform(1, 2))
+  px, py = g.transformPoint(0, 0)
+  t.check("replaceTransform", px == 1 and py == 2)
   g.pop()
+  t.errors("applyTransform type", "bad argument #1 to 'applyTransform' (Transform expected, got number)",
+    g.applyTransform, 5)
+  t.check("draw with a Transform", pcall(g.draw, image, tf) and pcall(g.draw, image, quad, tf))
+  t.check("print with a Transform", pcall(g.print, "hi", tf) and pcall(g.printf, "hi", tf, 50, "right"))
+  t.errors("printf align after a Transform",
+    "bad argument #4 to 'printf' (invalid align mode 'up', expected one of 'left', 'center', 'right')",
+    g.printf, "x", tf, 10, "up")
+  t.check("draw with shear", pcall(g.draw, image, 0, 0, 0, 1, 1, 0, 0, 0.5, 0.5))
+
   t.errors("pop underflow", "minimum stack depth reached (more pops than pushes?)", g.pop)
   for _ = 1, 64 do
     g.push()

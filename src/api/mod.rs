@@ -2,12 +2,47 @@
 //!
 //! Functions are raw luars callbacks wrapped in [`Args`], which gives Love2D-style argument
 //! errors (`bad argument #2 to 'rectangle' (number expected, got nil)`) and variadic arguments,
-//! neither of which luars' typed callbacks support.
+//! neither of which luars' typed callbacks support. [`methods!`] does the same for userdata
+//! methods.
+
+/// Defines the Lua methods of a userdata type (one that derives `LuaUserData`) as functions over
+/// [`Args`], in place of luars' `#[lua_methods]`. Use it for methods that take variadic
+/// arguments or return `self` for chaining. `self` is argument 1, and argument errors count from
+/// the argument after it, as in Love2D. It also adds `type()`, which returns the type's name.
+///
+/// ```ignore
+/// methods!(Transform {
+///     "translate" => translate,
+///     "reset" => |args| { ... },
+/// });
+/// ```
+macro_rules! methods {
+    ($type:ident { $($name:literal => $method:expr),* $(,)? }) => {
+        impl $type {
+            // Shadows luars' blanket `LuaMethodProvider`, which the derived `get_field` calls.
+            pub fn __lua_lookup_method(key: &str) -> Option<luars::CFunction> {
+                let method: luars::CFunction = match key {
+                    $($name => |state| {
+                        let method: fn(&mut $crate::api::Args) -> luars::LuaResult<usize> = $method;
+                        method(&mut $crate::api::Args::method(state, $name, stringify!($type)))
+                    },)*
+                    "type" => |state| {
+                        state.push(stringify!($type))?;
+                        Ok(1)
+                    },
+                    _ => return None,
+                };
+                Some(method)
+            }
+        }
+    };
+}
 
 mod audio;
 mod event;
 mod graphics;
 mod keyboard;
+mod math;
 mod mouse;
 mod timer;
 mod touch;
@@ -16,7 +51,7 @@ mod window;
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use luars::{IntoLua, Lua, LuaApi, LuaError, LuaResult, LuaState, LuaTable, LuaValue};
-use macroquad::math::{Vec2, vec2};
+use macroquad::math::{DVec2, Vec2, dvec2};
 
 use crate::game::Host;
 
@@ -35,6 +70,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     mouse::install(lua, pg, host)?;
     touch::install(lua, pg, host)?;
     audio::install(lua, pg, host)?;
+    math::install(lua, pg)?;
     Ok(())
 }
 
@@ -58,7 +94,13 @@ impl<'a> Module<'a> {
         let closure = self
             .lua
             .global_state_mut()
-            .create_closure(move |state: &mut LuaState| f(&mut Args { state, name }))?;
+            .create_closure(move |state: &mut LuaState| {
+                f(&mut Args {
+                    state,
+                    name,
+                    self_type: None,
+                })
+            })?;
         self.table.set(name, closure)
     }
 
@@ -71,9 +113,20 @@ impl<'a> Module<'a> {
 pub struct Args<'a> {
     pub state: &'a mut LuaState,
     name: &'static str,
+    /// For a method (see [`methods!`]), the type of `self`, which is argument 1.
+    self_type: Option<&'static str>,
 }
 
-impl Args<'_> {
+impl<'a> Args<'a> {
+    /// The arguments of a method of `self_type`, called `name`.
+    pub fn method(state: &'a mut LuaState, name: &'static str, self_type: &'static str) -> Self {
+        Args {
+            state,
+            name,
+            self_type: Some(self_type),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.state.arg_count()
     }
@@ -87,7 +140,19 @@ impl Args<'_> {
         self.state.error(message.to_string())
     }
 
+    /// An error that names the function, like `polygon: need at least three vertices`.
+    pub fn named_error(&mut self, message: impl Display) -> LuaError {
+        let message = format!("{}: {message}", self.name);
+        self.state.error(message)
+    }
+
     pub fn arg_error(&mut self, index: usize, message: impl Display) -> LuaError {
+        // Like Lua's own errors, methods don't count `self`.
+        let index = if self.self_type.is_some() {
+            index - 1
+        } else {
+            index
+        };
         let message = format!("bad argument #{index} to '{}' ({message})", self.name);
         self.state.error(message)
     }
@@ -111,6 +176,25 @@ impl Args<'_> {
         match self.get(index) {
             None => Ok(default),
             Some(_) => self.number(index),
+        }
+    }
+
+    /// An integer argument. Floats with no fractional part count, as in Lua.
+    pub fn integer(&mut self, index: usize) -> LuaResult<i64> {
+        let value = self.state.get_arg(index);
+        match value.as_ref().map(|v| (v.as_integer(), v.as_number())) {
+            Some((Some(i), _)) => Ok(i),
+            Some((None, Some(_))) => {
+                Err(self.arg_error(index, "number has no integer representation"))
+            }
+            _ => Err(self.type_error(index, "number")),
+        }
+    }
+
+    pub fn opt_integer(&mut self, index: usize, default: i64) -> LuaResult<i64> {
+        match self.get(index) {
+            None => Ok(default),
+            Some(_) => self.integer(index),
         }
     }
 
@@ -179,9 +263,38 @@ impl Args<'_> {
         }
     }
 
+    /// Runs `f` on `self`, argument 1 of a method made with [`methods!`]. Read the other
+    /// arguments first: `f` can't use `self`.
+    pub fn this<T: 'static, R>(&mut self, f: impl FnOnce(&mut T) -> R) -> LuaResult<R> {
+        let value = self.state.get_arg(1);
+        let this = value.as_ref().and_then(|v| v.as_userdata_mut());
+        if let Some(this) = this.and_then(|u| u.downcast_mut::<T>()) {
+            return Ok(f(this));
+        }
+        let got = value.map_or("no value", |v| v.type_name());
+        let expected = self.self_type.unwrap_or("userdata");
+        let message = format!(
+            "calling '{}' on bad self ({expected} expected, got {got})",
+            self.name
+        );
+        Err(self.state.error(message))
+    }
+
+    /// Returns `self` from a method, for chaining.
+    pub fn ret_self(&mut self) -> LuaResult<usize> {
+        let this = self.state.get_arg(1).unwrap_or(LuaValue::nil());
+        self.state.push_value(this)?;
+        Ok(1)
+    }
+
     /// Points given either as a table `{x1, y1, x2, y2, ...}` at `start`, or as the numbers from
     /// `start` to the last argument.
     pub fn points(&mut self, start: usize) -> LuaResult<Vec<Vec2>> {
+        Ok(self.vertices(start)?.iter().map(|v| v.as_vec2()).collect())
+    }
+
+    /// Like [`Args::points`], in double precision.
+    pub fn vertices(&mut self, start: usize) -> LuaResult<Vec<DVec2>> {
         let mut coords = Vec::new();
         if let Some(table) = self.table(start)? {
             for i in 1.. {
@@ -200,16 +313,13 @@ impl Args<'_> {
             }
         }
         if coords.len() % 2 != 0 {
-            return Err(self.error(format!(
-                "{}: number of vertex components must be a multiple of two",
-                self.name
-            )));
+            return Err(self.named_error("number of vertex components must be a multiple of two"));
         }
         Ok(coords
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|[x, y]| vec2(*x as f32, *y as f32))
+            .map(|[x, y]| dvec2(*x, *y))
             .collect())
     }
 
