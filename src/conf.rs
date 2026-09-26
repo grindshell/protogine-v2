@@ -7,6 +7,10 @@ pub struct Conf {
     pub window: Window,
     /// Upper bound on `dt`, in seconds.
     pub maxdelta: f64,
+    /// The save directory's name. `None` uses the game's name.
+    pub identity: Option<String>,
+    /// Whether reads look in the game before the save directory.
+    pub append_identity: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +39,8 @@ impl Default for Conf {
                 vsync: true,
             },
             maxdelta: 10.0,
+            identity: None,
+            append_identity: false,
         }
     }
 }

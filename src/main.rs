@@ -2,6 +2,7 @@ mod api;
 mod audio;
 mod conf;
 mod engine;
+mod filesystem;
 mod game;
 mod graphics;
 mod input;
@@ -46,7 +47,8 @@ fn main() {
     Window::from_config(Conf::default().window_conf(), async {
         let start = match macroquad::file::load_file(GAME_ARCHIVE).await {
             Err(_) => Start::NoGame,
-            Ok(bytes) => match vfs::Vfs::mount_zip(&bytes)
+            // xtask packs the game under a directory named after it, which names the game.
+            Ok(bytes) => match vfs::Vfs::mount_zip(&bytes, None, GAME_ARCHIVE)
                 .map_err(|e| e.to_string())
                 .and_then(game::Game::new)
             {

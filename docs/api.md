@@ -1,8 +1,8 @@
 # Lua API design
 
-**Status:** first design pass. It covers the core lifecycle, graphics, input, audio and math. Filesystem and system come in later passes.
+**Status:** first design pass. It covers the core lifecycle, graphics, input, audio, math and the filesystem. System comes in a later pass.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio` and `pg.math`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math` and `pg.filesystem`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -37,7 +37,7 @@ end
   - Angles are in radians.
   - Coordinates are DPI-scaled pixels, with the origin at the top left and y pointing down. macroquad already reports sizes this way.
 - **Objects** are userdata with `:` methods (`image:getWidth()`), freed by the GC. `obj:type()` returns the type name, such as `"Image"`.
-- **Synchronous everywhere.** The game's files are mounted before any Lua runs, so nothing blocks or yields on any platform (see [Games and files](#games-and-files)).
+- **Synchronous everywhere.** The game's files and its saves are loaded before any Lua runs, so nothing blocks or yields on any platform (see [Games and files](#games-and-files)).
 - **Misuse raises Lua errors** in standard form, for example `bad argument #2 to 'rectangle' (number expected, got nil)`. Rust code never panics on bad script input.
 
 ## Games and files
@@ -47,13 +47,15 @@ A game is a directory with a required `main.lua`, an optional `conf.lua`, and it
 - **Native:** run `protogine-v2 [game] [args...]`, where `game` is a game directory or `.zip`. The engine reads a directory directly and mounts a zip in memory. With no `game`, it shows the [no-game screen](#no-game-screen).
 - **Web:** `cargo xtask web --game <dir>` zips the game directory into `game.zip` next to the wasm. The engine fetches it before running any Lua and mounts it in memory. Without `--game`, the build ships no archive and shows the no-game screen.
 
+The game's files are read-only. Each game also has a writable **save directory**, named by its identity: `t.identity` in `conf.lua`, or else the name of the game's directory or archive (without `.zip`). Reads look in the save directory first, then the game, so a saved file hides a game file at the same path. See [pg.filesystem](#pgfilesystem).
+
 File rules:
 
 - **Paths** are relative to the game root, use `/`, and are case-sensitive on every platform. The engine enforces case on Windows too, so a game that works natively also works on the web.
-- **`require("a.b")`** loads `a/b.lua`, then falls back to `a/b/init.lua`, from the mount. C modules aren't supported.
+- **`require("a.b")`** loads `a/b.lua`, then falls back to `a/b/init.lua`, from the save directory or the game. C modules aren't supported.
 - **Standard library:** `base`, `string`, `table`, `math`, `utf8` and `coroutine` are available.
   - `print` goes to stdout natively and to the browser console on the web.
-  - `dofile` and `loadfile` read from the mount.
+  - `dofile` and `loadfile` read from the save directory or the game.
   - From `os`, only `os.time`, `os.clock` and `os.date` are available.
   - There's no `io` library, and `debug` only offers `debug.traceback`.
 
@@ -84,6 +86,8 @@ function pg.conf(t)
   t.window.msaa = 0         -- MSAA sample count
   t.window.vsync = true
   t.maxdelta = 10           -- seconds; dt is capped at this
+  t.identity = nil          -- the save directory's name; nil uses the game's name
+  t.appendidentity = false  -- whether reads look in the game before the save directory
 end
 ```
 
@@ -383,6 +387,35 @@ A `Transform` holds a transformation, which `pg.graphics.applyTransform`, `repla
 
 The methods that change a Transform return it, so calls chain: `t:translate(10, 0):rotate(1)`. `a * b` returns a new Transform that applies `b`, then `a`.
 
+## pg.filesystem
+
+Reading functions see the save directory and the game together, as described in [Games and files](#games-and-files). Writing functions only change the save directory.
+
+| Function | Notes |
+| --- | --- |
+| `read(name, size)` | Returns the file's contents as a string, and its size in bytes. `size` limits how many bytes are read. On failure, returns `nil` and an error message. `read("string", name, size)` works too. |
+| `lines(name)` | An iterator over the file's lines, without their line endings (`\n` or `\r\n`). A file that can't be read is an error. |
+| `load(name)` | Loads a Lua file without running it, like `loadfile`. Returns the chunk, or `nil` and an error message. |
+| `getInfo(path, filtertype, info)` | Returns a table with `type` (`"file"` or `"directory"`), `size` (files only), and `modtime` (seconds since 1970, when known), or `nil` if nothing is at `path`. With `filtertype`, it also returns `nil` if the type doesn't match. With an `info` table, it fills that in and returns it instead of making a new one. |
+| `getDirectoryItems(dir)` | The names in a directory, sorted. `""` is the root. |
+| `getRealDirectory(path)` | Where `path` comes from: `getSaveDirectory()` or `getSource()`. `nil` if it doesn't exist. |
+| `write(name, data, size)` | Writes a string to a file, replacing it, and creates its directories. `size` limits how many bytes are written. Returns `true`, or `false` and an error message. |
+| `append(name, data, size)` | Like `write`, but adds to the end of the file. |
+| `createDirectory(name)` | Creates a directory and its parents. Returns `true`, or `false` and an error message. |
+| `remove(name)` | Removes a file or an empty directory. Returns `true`, or `false` and an error message. |
+| `getIdentity()` / `setIdentity(name, appendidentity)` | The save directory's name, which must be a valid file name. `appendidentity` is like `t.appendidentity`. |
+| `getSaveDirectory()` | Where the save directory is. |
+| `getSource()` | The game's directory or archive, as a full path natively and `"game.zip"` on the web. |
+
+Strings can hold any bytes, so binary files work.
+
+Save directories are:
+
+- **Windows:** `%APPDATA%\protogine\<identity>`
+- **macOS:** `~/Library/Application Support/protogine/<identity>`
+- **Linux:** `$XDG_DATA_HOME/protogine/<identity>`, or `~/.local/share/protogine/<identity>`
+- **Web:** the browser's IndexedDB storage for the page's site. `getSaveDirectory()` returns `"indexeddb:protogine/<identity>"`. The engine loads all saved files before the game starts. A write updates them right away, and reaches IndexedDB a moment later, so closing the tab at once can lose the last write. Browsers can clear this storage, for example in private windows.
+
 ## Divergences from Love2D
 
 - **Lua 5.5 (luars), not LuaJIT.** There's no `ffi`, no `bit` (use the native bitwise operators), no `setfenv`/`getfenv`, and no `loadstring`. `unpack` becomes `table.unpack`. Love2D libraries that rely on any of these need porting.
@@ -390,9 +423,13 @@ The methods that change a Transform return it, so calls chain: `t:translate(10, 
   - Syntax errors come from luars' parser and can read differently from C Lua's, for example `expected 'TkRightParen'`.
 - **The engine owns the main loop and the error screen.** There's no `pg.run` or `pg.errorhandler`.
 - **Files:**
-  - The game is mounted read-only.
   - There's no `io` library.
-  - Paths are case-sensitive on every platform.
+  - Paths are case-sensitive on every platform. On a case-insensitive disk (Windows and macOS, by default), a save file can't exist twice in two cases, though it can on the web.
+  - Save directories are under `protogine` instead of `LOVE`.
+  - `write` and `append` create missing directories. `createDirectory` and `remove` also return an error message when they fail.
+  - `getInfo` never reports `"symlink"` or `"other"`, and has no `modtime` for files in a `.zip`.
+  - There are no `File` or `FileData` objects (`newFile`, `newFileData`, `read("data", ...)`), no `mount` or `unmount`, and no `setRequirePath`. There's no `pg.filedropped` or `pg.directorydropped` callback.
+  - Love2D 11's deprecated `exists`, `isFile`, `isDirectory`, `getSize` and `getLastModified` are left out; use `getInfo`. So are `isFused`, `getUserDirectory`, `getAppdataDirectory`, `getWorkingDirectory` and `getSourceBaseDirectory`.
 - **Window:** the title can only be set in `conf.lua`, because miniquad has no runtime title API.
 - **Input:**
   - Key names come from physical key positions (except on Linux), so `key` doesn't follow the player's layout and always equals `scancode`. There's no `isScancodeDown`, `getKeyFromScancode` or `getScancodeFromKey`.

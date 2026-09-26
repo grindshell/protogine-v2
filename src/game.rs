@@ -15,6 +15,7 @@ use crate::{
     api::{self, SharedHost},
     audio::{Audio, SharedAudio},
     conf::Conf,
+    filesystem::Filesystem,
     graphics::Graphics,
     input::{Event, Input, RawEvent},
     vfs::Vfs,
@@ -22,7 +23,8 @@ use crate::{
 
 /// Engine state shared by the `pg.*` functions.
 pub struct Host {
-    pub vfs: Vfs,
+    /// The game's files and its save directory.
+    pub fs: Filesystem,
     /// `None` until the window exists; `pg.graphics` is only installed after that.
     pub graphics: Option<Graphics>,
     pub input: Input,
@@ -58,7 +60,7 @@ impl Game {
     pub fn new(vfs: Vfs) -> Result<Game, String> {
         let mut lua = Lua::new(SafeOption::default());
         let host = Rc::new(RefCell::new(Host {
-            vfs,
+            fs: Filesystem::new(vfs),
             graphics: None,
             input: Input::default(),
             audio: Audio::new(),
@@ -81,6 +83,14 @@ impl Game {
             lua,
         };
         game.conf = game.run_conf()?;
+        {
+            let mut host = game.host.borrow_mut();
+            let fs = &mut host.fs;
+            let identity = game.conf.identity.clone();
+            let identity = identity.unwrap_or_else(|| fs.game_name().to_string());
+            fs.set_identity(&identity, game.conf.append_identity)
+                .map_err(|e| format!("conf.lua: t.identity: {e}"))?;
+        }
         Ok(game)
     }
 
@@ -153,7 +163,7 @@ impl Game {
 
     fn run_conf(&mut self) -> Result<Conf, String> {
         let mut conf = Conf::default();
-        let exists = self.host.borrow().vfs.exists("conf.lua");
+        let exists = self.host.borrow().fs.exists("conf.lua");
         if !exists {
             return Ok(conf);
         }
@@ -186,6 +196,8 @@ impl Game {
         let t = self.lua.create_table()?;
         t.set("window", window)?;
         t.set("maxdelta", conf.maxdelta)?;
+        t.set("identity", conf.identity.as_deref())?;
+        t.set("appendidentity", conf.append_identity)?;
         Ok(t)
     }
 
@@ -322,7 +334,7 @@ fn run_prelude(lua: &mut Lua, host: &SharedHost) -> Result<(LuaFunction, LuaTabl
     let read_source = {
         let host = host.clone();
         lua.create_function(move |path: String| -> (Option<String>, Option<String>) {
-            match host.borrow().vfs.read_string(&path) {
+            match host.borrow().fs.read_string(&path) {
                 Ok(source) => (Some(source), None),
                 Err(e) => (None, Some(e.to_string())),
             }
@@ -363,6 +375,8 @@ fn read_conf(t: &LuaTable, conf: &mut Conf) -> Result<(), String> {
     w.msaa = field::<i64>(&window, "window.msaa")? as i32;
     w.vsync = field(&window, "window.vsync")?;
     conf.maxdelta = field(t, "maxdelta")?;
+    conf.identity = field(t, "identity")?;
+    conf.append_identity = field(t, "appendidentity")?;
     Ok(())
 }
 

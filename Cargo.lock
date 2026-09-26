@@ -916,6 +916,7 @@ dependencies = [
  "kira",
  "luars",
  "macroquad",
+ "wasm-bindgen",
  "zip",
 ]
 

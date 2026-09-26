@@ -26,7 +26,13 @@ pub fn no_game_frame() -> Option<Result<Vfs, String>> {
     let dropped = get_dropped_files().into_iter().next()?;
     Some(match (dropped.path, dropped.bytes) {
         (Some(path), _) if path.is_dir() => Vfs::mount_path(&path).map_err(|e| e.to_string()),
-        (_, Some(bytes)) => Vfs::mount_zip(&bytes).map_err(|e| e.to_string()),
+        (path, Some(bytes)) => {
+            let name = path.as_ref().and_then(|p| p.file_stem()?.to_str());
+            let source = path
+                .as_ref()
+                .map_or("dropped file".into(), |p| p.display().to_string());
+            Vfs::mount_zip(&bytes, name, source).map_err(|e| e.to_string())
+        }
         (Some(path), None) => Vfs::mount_path(&path).map_err(|e| e.to_string()),
         (None, None) => Err("the dropped file could not be read".to_string()),
     })

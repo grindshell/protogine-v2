@@ -2,7 +2,7 @@
 
 Protogine is a 2D game framework in the spirit of [LÖVE (Love2D)](https://love2d.org/): games are written in **Lua**, and a Rust host runs them. The host uses **macroquad** for the window, main loop, rendering and input, **luars** for the Lua runtime, and **kira** for audio. The Rust binary is the engine. A game is a folder of Lua scripts and assets that the engine loads and runs.
 
-**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`), `pg.audio` and `pg.math` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
+**Status:** the core lifecycle, `pg.graphics`, input (`pg.keyboard`, `pg.mouse`, `pg.touch`), `pg.audio`, `pg.math` and `pg.filesystem` work on native and web; `games/demo` exercises them. See [docs/api.md](docs/api.md) for exactly what is implemented.
 
 ## Stack
 
@@ -45,6 +45,7 @@ Trade-offs:
 
 - **Lua API:** specified in [docs/api.md](docs/api.md). It's Love2D-shaped under a single global, `pg`, with callbacks like `pg.update(dt)` and modules like `pg.graphics`. This Lua-facing API is the product. Update the doc in the same change as any API change, and record every divergence from Love2D there.
 - **Files are mounted up front:** native reads the game directory or `.zip`, and the web fetches `game.zip` before any Lua runs. Every file API, and `require`, is synchronous on every platform.
+- **Save directories:** a writable directory per identity, layered over the game's files so reads check it first. Natively it's a directory under the platform's data directory, or under `PROTOGINE_SAVE_DIR` if that's set (the tests set it). On the web it's IndexedDB. `web/index.html` loads every saved file into memory before starting the wasm, and exposes them to Rust as `window.protogineSaves`, a synchronous key-value store that writes back to IndexedDB in the background.
 - **Audio:** each game owns a kira `AudioManager`, created on first use and dropped when the game stops. Sources are decoded into memory up front, even `"stream"` ones. Don't switch to kira's `StreamingSoundData`: in kira 0.12.4, its decode thread spins forever at the end of an OGG Vorbis file after a seek, so the sound hangs just before the end and looping breaks. MP3, FLAC and WAV streams are fine. Streaming also doesn't exist on wasm.
 
 Source layout:
@@ -59,7 +60,8 @@ Source layout:
 | `src/input.rs` | The engine side of input. It reads macroquad's event queue (one subscriber for the whole run, since macroquad can't unsubscribe), turns it into Love2D-style events, and tracks the state the getters report. It normalizes wheel units, counts multi-clicks, and turns the primary touch into mouse events. It has no Lua dependency, and its event logic is unit-tested. |
 | `src/audio.rs` | The engine side of `pg.audio`: the lazily created `AudioManager`, and `Source`, which tracks the play, pause and stop state the game asked for, since kira applies commands a block late. It also keeps playing sources reachable after the game drops them, like Love2D's source pool. It has no Lua dependency. |
 | `src/math.rs` | The engine side of `pg.math`: Love2D's random number generator, noise, triangulation and Bézier curves, ported so that seeds and noise give the same results as Love2D. It has no Lua dependency. |
-| `src/vfs.rs` | The game's read-only, case-sensitive filesystem: a directory or an in-memory zip. |
+| `src/vfs.rs` | The game's read-only, case-sensitive files: a directory or an in-memory zip. It also names the game, which is the default save identity. |
+| `src/filesystem.rs` | The engine side of `pg.filesystem`: the save directory, on disk or in the web's key-value store, layered over the game's files. It has no Lua dependency, and its unit tests run against both kinds of save directory. |
 | `src/screens.rs` | The no-game and error screens. |
 | `src/conf.rs` | `Conf`, filled in by `pg.conf(t)`, and its conversion to a window config. |
 
@@ -87,6 +89,7 @@ macroquad normally loads through miniquad's `gl.js`, which only supplies the `en
    - It appends `bindgenImports()` and `attachBindgen(exports)`.
    - The patch fails loudly if a new wasm-bindgen changes the glue's shape.
 4. Copies `web/index.html` and `web/gl.js` into `target/web/`.
+5. With `--game DIR`, zips the game into `game.zip` under a top-level directory named after `DIR`. The engine strips that directory and takes its name as the game's name, the default save identity.
 
 In `web/index.html`, a gl.js plugin handles the wasm-bindgen side:
 
@@ -100,6 +103,7 @@ Requirements and notes:
 - `wasm-bindgen-cli` must match the `wasm-bindgen` version in `Cargo.lock`, currently 0.2.129. Install it with `cargo install wasm-bindgen-cli --version 0.2.129 --locked`. Reinstall whenever `Cargo.lock` bumps wasm-bindgen.
 - `web/gl.js` is vendored from miniquad at the commit that miniquad 0.4.11 was published from (`4f13d4a`). Update it whenever the miniquad version in `Cargo.lock` changes.
 - Browsers keep an `AudioContext` suspended until a user gesture. `web/index.html` wraps the `AudioContext` constructor to track the contexts cpal creates, and resumes them on every pointerdown, keydown and touchend.
+- The engine calls JavaScript through wasm-bindgen imports, like the save store in `src/filesystem.rs`. `wasm-bindgen` is a direct dependency for wasm32 only, and the loader merges its imports like any others.
 
 ## Commands
 
@@ -119,12 +123,13 @@ The repo is a Cargo workspace: the root package is the engine, and `xtask/` hold
 
 `cargo test` runs the Rust unit tests and the Lua regression tests in `tests/lua.rs`. The Lua tests run the engine binary, so each one opens a window briefly, and they need a display. The audio suite skips itself if there's no audio device.
 
-- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input`, `audio` and `math`).
+- **Suites:** `tests/lua/` is a test game with one suite per area in `tests/lua/suites/` (`lifecycle`, `graphics`, `input`, `audio`, `math` and `filesystem`).
   - Suites use the helpers in `tests/lua/harness.lua`. `t.check` and `t.errors` print `ok` or `FAIL` lines, and `t.finish()` prints the summary and quits.
   - Run one suite by hand with `cargo run -- tests/lua graphics`.
   - When you change an API, add checks for it to its suite, asserting exact error messages. To add a suite, create `suites/<name>.lua` and a `#[test]` in `tests/lua.rs`.
 - **Error reports:** `tests/lua.rs` also writes small failing games to the temp dir and checks their error reports: tracebacks, and syntax, `conf.lua` and callback errors.
   - These rely on `PROTOGINE_EXIT_ON_ERROR`. When it's set, the native engine logs the report to stderr and exits with status 1 instead of showing the error screen.
+- **Saves:** every engine run in `tests/lua.rs` sets `PROTOGINE_SAVE_DIR` to the temp dir, so tests never touch real saves. The `filesystem` suite runs twice on a fresh save directory, and the second run checks what the first one wrote.
 - **Event handling:** input events can't be injected into a real window, so `src/input.rs` unit-tests the event logic directly.
 
 ### CI

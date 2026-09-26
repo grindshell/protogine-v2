@@ -50,6 +50,52 @@
     // game.js is wasm-bindgen's glue, patched by `cargo xtask web` so gl.js owns instantiation.
     import { bindgenImports, attachBindgen } from "./game.js";
 
+    // Save files (pg.filesystem) live in IndexedDB, keyed by "identity/path", with directories
+    // as "identity/path/". The engine's file API is synchronous, so every file is loaded before
+    // the game starts. Writes update this copy right away, then IndexedDB in the background.
+    async function openSaves() {
+      const files = new Map();
+      let db = null;
+      const done = (request) => new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const open = indexedDB.open("protogine", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("files");
+        db = await done(open);
+        const store = db.transaction("files").objectStore("files");
+        const [keys, values] = await Promise.all([done(store.getAllKeys()), done(store.getAll())]);
+        keys.forEach((key, i) => files.set(key, values[i]));
+      } catch (error) {
+        console.warn("protogine: saves won't persist, since IndexedDB is unavailable:", error);
+        db = null;
+      }
+      const persist = (update) => {
+        if (!db) return;
+        const transaction = db.transaction("files", "readwrite");
+        transaction.onerror = () => console.error("protogine: couldn't save:", transaction.error);
+        update(transaction.objectStore("files"));
+      };
+      return {
+        keys: () => [...files.keys()],
+        read: (key) => files.get(key)?.data,
+        size: (key) => files.get(key)?.data.length,
+        modtime: (key) => files.get(key)?.modtime,
+        write(key, data) {
+          // `data` is a view into wasm memory, which can move, so copy it.
+          const entry = { data: data.slice(), modtime: Date.now() / 1000 };
+          files.set(key, entry);
+          persist((store) => store.put(entry, key));
+        },
+        remove(key) {
+          files.delete(key);
+          persist((store) => store.delete(key));
+        },
+      };
+    }
+    window.protogineSaves = await openSaves();
+
     const imports = bindgenImports();
 
     miniquad_add_plugin({

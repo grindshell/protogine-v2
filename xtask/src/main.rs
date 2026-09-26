@@ -155,15 +155,25 @@ fn build_web(opts: &Options) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Zips a game directory with `main.lua` at the archive root.
+/// Zips a game directory under a top-level directory of the same name. The engine strips that
+/// directory, and uses its name as the game's name and default save identity, since the archive
+/// is always called `game.zip`.
 fn pack_game(game: &Path, archive: &Path) -> Result {
     if !game.join("main.lua").is_file() {
         return Err(format!("{} has no main.lua", game.display()));
     }
+    let absolute = std::path::absolute(game).map_err(|e| format!("{}: {e}", game.display()))?;
+    let name = absolute
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{} has no usable name", game.display()))?;
 
     let mut files = Vec::new();
     collect_files(game, game, &mut files)?;
     files.sort();
+    for (archive_name, _) in &mut files {
+        *archive_name = format!("{name}/{archive_name}");
+    }
 
     let file =
         fs::File::create(archive).map_err(|e| format!("create {}: {e}", archive.display()))?;

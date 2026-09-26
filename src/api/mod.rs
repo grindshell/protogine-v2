@@ -40,6 +40,7 @@ macro_rules! methods {
 
 mod audio;
 mod event;
+mod filesystem;
 mod graphics;
 mod keyboard;
 mod math;
@@ -71,6 +72,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     touch::install(lua, pg, host)?;
     audio::install(lua, pg, host)?;
     math::install(lua, pg)?;
+    filesystem::install(lua, pg, host)?;
     Ok(())
 }
 
@@ -215,6 +217,16 @@ impl<'a> Args<'a> {
         }
     }
 
+    /// A string argument as bytes, which needn't be UTF-8. Numbers are converted, as with
+    /// `tostring`.
+    pub fn bytes(&mut self, index: usize) -> LuaResult<Vec<u8>> {
+        match self.state.get_arg(index) {
+            Some(v) if v.is_string() => Ok(v.as_bytes().unwrap_or_default().to_vec()),
+            Some(v) if v.as_number().is_some() => Ok(number_to_string(&v).into_bytes()),
+            _ => Err(self.type_error(index, "string")),
+        }
+    }
+
     pub fn boolean(&self, index: usize) -> bool {
         self.state.get_arg(index).is_some_and(|v| v.is_truthy())
     }
@@ -335,6 +347,12 @@ impl<'a> Args<'a> {
     /// Pushes return values and reports how many there are.
     pub fn ret(&mut self, values: impl IntoLua) -> LuaResult<usize> {
         self.state.push_multi(values)
+    }
+
+    /// Pushes a string of any bytes, as another return value.
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> LuaResult<()> {
+        let value = self.state.create_bytes(bytes)?;
+        self.state.push_value(value)
     }
 }
 

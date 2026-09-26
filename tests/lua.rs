@@ -3,6 +3,7 @@
 //!
 //! Each run opens a window for a moment. `PROTOGINE_EXIT_ON_ERROR` makes the engine exit with
 //! status 1 after logging an error report, instead of showing the error screen.
+//! `PROTOGINE_SAVE_DIR` keeps save directories in the temp dir.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -14,10 +15,16 @@ use std::{
 };
 
 fn run(game: &Path, args: &[&str]) -> Output {
+    run_with_saves(game, args, &TempGame::path("saves"))
+}
+
+/// Runs the engine with save directories under `saves`.
+fn run_with_saves(game: &Path, args: &[&str], saves: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_protogine-v2"))
         .arg(game)
         .args(args)
         .env("PROTOGINE_EXIT_ON_ERROR", "1")
+        .env("PROTOGINE_SAVE_DIR", saves)
         .output()
         .expect("could not run the engine")
 }
@@ -37,9 +44,12 @@ fn suites_dir() -> PathBuf {
 
 /// Runs a suite from `tests/lua` (see `tests/lua/harness.lua` for its output format).
 fn suite(game: &Path, args: &[&str]) {
-    let output = run(game, args);
+    check_suite(&run(game, args));
+}
+
+fn check_suite(output: &Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{}", describe(&output));
+    assert!(output.status.success(), "{}", describe(output));
     if let Some(reason) = stdout.lines().find_map(|l| l.strip_prefix("skip: ")) {
         eprintln!("skipped: {reason}");
         return;
@@ -47,14 +57,14 @@ fn suite(game: &Path, args: &[&str]) {
     assert!(
         !stdout.lines().any(|l| l.starts_with("FAIL")),
         "{}",
-        describe(&output)
+        describe(output)
     );
     assert!(
         stdout
             .lines()
             .any(|l| l.starts_with("done: ") && l.ends_with(" 0 failed")),
         "the suite didn't finish\n{}",
-        describe(&output)
+        describe(output)
     );
 }
 
@@ -81,6 +91,19 @@ fn math() {
 #[test]
 fn audio() {
     suite(&suites_dir(), &["audio"]);
+}
+
+#[test]
+fn filesystem() {
+    // The second run checks what the first one saved.
+    let saves = TempGame(TempGame::path("filesystem-saves"));
+    fs::remove_dir_all(&saves.0).ok();
+    check_suite(&run_with_saves(&suites_dir(), &["filesystem"], &saves.0));
+    check_suite(&run_with_saves(
+        &suites_dir(),
+        &["filesystem", "again"],
+        &saves.0,
+    ));
 }
 
 /// A game directory (or zip) in the temp dir, deleted afterwards.
@@ -257,6 +280,36 @@ fn wrong_type_in_conf() {
         &report,
         &["conf.lua: t.window.width has the wrong type (string)"],
     );
+}
+
+#[test]
+fn identity_in_conf() {
+    let report = error_report(
+        "identity",
+        &[
+            (
+                "main.lua",
+                "error(\"identity \" .. pg.filesystem.getIdentity())\n",
+            ),
+            (
+                "conf.lua",
+                "function pg.conf(t)\n  t.identity = \"custom\"\nend\n",
+            ),
+        ],
+    );
+    assert_contains(&report, &["identity custom"]);
+
+    let report = error_report(
+        "bad-identity",
+        &[
+            ("main.lua", ""),
+            (
+                "conf.lua",
+                "function pg.conf(t)\n  t.identity = \"a/b\"\nend\n",
+            ),
+        ],
+    );
+    assert_contains(&report, &["conf.lua: t.identity: invalid identity 'a/b'"]);
 }
 
 #[test]

@@ -187,7 +187,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
         m.function("newSource", move |args| {
             let path = args.string(1)?;
             let source_type = args.option(2, "source type", SOURCE_TYPES)?;
-            let bytes = host.borrow().vfs.read(&path);
+            let bytes = host.borrow().fs.read(&path);
             let result = bytes
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| engine::Source::new(&audio, bytes, source_type));
