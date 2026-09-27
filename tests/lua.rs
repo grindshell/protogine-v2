@@ -347,6 +347,47 @@ fn error_in_draw() {
 }
 
 #[test]
+fn canvas_active_after_draw() {
+    let report = error_report(
+        "canvas-active",
+        &[(
+            "main.lua",
+            "local canvas\n\
+             function pg.load()\n\
+             \x20 canvas = pg.graphics.newCanvas(8, 8)\n\
+             end\n\
+             function pg.draw()\n\
+             \x20 pg.graphics.setCanvas(canvas)\n\
+             end\n",
+        )],
+    );
+    assert_contains(
+        &report,
+        &["a Canvas was still active when pg.draw returned"],
+    );
+}
+
+#[test]
+fn error_in_render_to() {
+    let report = error_report(
+        "render-to",
+        &[(
+            "main.lua",
+            "function pg.load()\n\
+             \x20 local canvas = pg.graphics.newCanvas(8, 8)\n\
+             \x20 canvas:renderTo(function()\n\
+             \x20   error(\"inside\")\n\
+             \x20 end)\n\
+             end\n",
+        )],
+    );
+    assert_contains(
+        &report,
+        &["main.lua:4: inside", "stack traceback:", "main.lua:3:"],
+    );
+}
+
+#[test]
 fn missing_main() {
     let report = error_report("no-main", &[("other.lua", "")]);
     assert_contains(&report, &["file not found: 'main.lua'"]);

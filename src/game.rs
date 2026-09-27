@@ -143,6 +143,11 @@ impl Game {
         self.host.borrow_mut().graphics().begin_frame();
         if let Some(draw) = self.callback("draw")? {
             self.call(&draw, Vec::new())?;
+            if self.host.borrow_mut().graphics().canvas().is_some() {
+                return Err("a Canvas was still active when pg.draw returned (call \
+                            pg.graphics.setCanvas() to draw to the screen again)"
+                    .to_string());
+            }
         }
         Ok(())
     }
@@ -308,12 +313,14 @@ impl Game {
 }
 
 impl Drop for Game {
-    /// Silences the game and gives the cursor back to the engine's screens when it stops.
+    /// Silences the game and gives the cursor and the screen back to the engine's screens when
+    /// it stops.
     fn drop(&mut self) {
         let mut host = self.host.borrow_mut();
         host.audio.borrow_mut().shutdown();
         if self.started {
             host.input.restore_cursor();
+            host.graphics().shutdown();
         }
     }
 }

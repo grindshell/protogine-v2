@@ -2,6 +2,7 @@
 
 local shapes = require("shapes")
 local scenery = require("scenery")
+local retro = require("retro")
 local controls = require("controls")
 
 local time = 0
@@ -35,6 +36,7 @@ function pg.load(args)
   body_font = pg.graphics.getFont()
 
   scenery.load()
+  retro.load()
   controls.load()
 end
 
@@ -59,6 +61,7 @@ function pg.draw()
 
   shapes.draw(20, 100)
   scenery.draw(time)
+  retro.draw(695, 100, time)
 
   -- A sprite spinning around its center, animated with quads.
   g.push()

@@ -2,7 +2,7 @@
 
 **Status:** first design pass. It covers the core lifecycle, graphics, input, audio, math, the filesystem and the system.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics`, `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics` (including canvases and blend modes), `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -131,8 +131,8 @@ On the error screen, Ctrl+C (Cmd+C on macOS) copies the message and traceback to
 | `setPointSize(size)` / `getPointSize()` | Applies to `points`. Default 1. |
 | `setFont(font)` / `getFont()` | The font used by `print` and `printf`. |
 | `setDefaultFilter(filter)` / `getDefaultFilter()` | Either `"linear"` (the default) or `"nearest"`. Applies to images and fonts created afterwards. |
-| `getWidth()`, `getHeight()`, `getDimensions()` | The drawable area. |
-| `clear(r, g, b, a)` | Clears immediately. |
+| `getWidth()`, `getHeight()`, `getDimensions()` | The window's drawable area, even while a canvas is active. |
+| `clear(r, g, b, a)` | Clears the screen or the active canvas immediately. With no arguments, it clears the screen to the background color and a canvas to transparent black. |
 
 ### Shapes
 
@@ -185,19 +185,82 @@ Every `Font` made from the built-in font shares one glyph atlas, so `setFilter` 
 | `replaceTransform(transform)` | Makes a `Transform` the current transform. |
 | `transformPoint(x, y)`, `inverseTransformPoint(x, y)` | Convert between local and screen coordinates, for example for mouse picking. |
 
+### Canvases
+
+A `Canvas` is an image the game draws into. Pixel-art games draw into a small canvas and scale it up, and a canvas can also hold drawing that doesn't change every frame, so it's only drawn once.
+
+```lua
+local canvas
+
+function pg.load()
+  pg.graphics.setDefaultFilter("nearest")
+  canvas = pg.graphics.newCanvas(320, 180)
+end
+
+function pg.draw()
+  pg.graphics.setCanvas(canvas)
+  pg.graphics.clear(0.1, 0.1, 0.2)
+  -- draw the game at 320x180 here
+  pg.graphics.setCanvas()
+
+  pg.graphics.draw(canvas, 0, 0, 0, 4)  -- scaled up 4x, to 1280x720
+end
+```
+
+| Function | Notes |
+| --- | --- |
+| `newCanvas(width, height, settings)` | Returns a `Canvas`, cleared to transparent black. `width` and `height` are positive whole numbers, and default to the window's size. `settings` is an optional table: `msaa` is the number of MSAA samples (default 0, none), and `dpiscale` is pixels per unit (default `pg.window.getDPIScale()`). Any other key is an error. The canvas uses the default filter. A canvas bigger than the GPU supports is an error. |
+| `setCanvas(canvas)` / `setCanvas()` | Sends drawing into `canvas`, or back to the screen. |
+| `getCanvas()` | The active Canvas, or `nil` for the screen. |
+
+- **Drawing into a canvas:** a canvas is `width` by `height` units, with the origin at its top left, whatever its DPI scale. Switching canvases only changes where drawing goes: the transform, color, font and every other setting carry over.
+- **Drawing a canvas:** a canvas is drawn like an Image, with `draw(canvas, ...)` or `draw(canvas, quad, ...)`, at its size in units. A quad on a canvas is in the canvas's units too. Drawing the active canvas is an error.
+- **Premultiplied alpha:** as in Love2D, drawing into a canvas multiplies colors by their alpha, so the canvas holds premultiplied colors. Draw a canvas with translucent pixels under `setBlendMode("alpha", "premultiplied")`, or they come out too dark. An opaque canvas, such as one cleared to an opaque color, looks the same either way.
+- **When:** any callback can draw into a canvas. For example, `pg.load` can draw a background into one once. Drawing to the screen only shows from `pg.draw`.
+- **The screen at the end of `pg.draw`:** a canvas stays active across callbacks until `setCanvas()`, but `pg.draw` must end with the screen active. A canvas that's still active when `pg.draw` returns is an error. The clear before `pg.draw` always clears the screen.
+- **Resizing:** canvases keep their size when the window changes size. To keep a window-sized canvas, make a new one in `pg.resize`.
+
+`Canvas` methods:
+
+| Method | Notes |
+| --- | --- |
+| `getWidth()`, `getHeight()`, `getDimensions()` | The size in units. |
+| `getPixelWidth()`, `getPixelHeight()`, `getPixelDimensions()` | The size in pixels: the size in units times the DPI scale, rounded. |
+| `getDPIScale()` | |
+| `getMSAA()` | The number of MSAA samples the canvas actually uses. It can be lower than requested if the GPU doesn't support that many, and is 0 without MSAA. On the web, it's always 0. |
+| `setFilter(filter)` / `getFilter()` | Like `Image`'s. |
+| `renderTo(func, ...)` | Makes the canvas active, calls `func(...)`, then makes the previous canvas, or the screen, active again. It restores the previous one even if `func` raises an error. |
+
+### Blend modes
+
+A canvas with translucent pixels needs the `"premultiplied"` alpha mode to be drawn correctly (see [Canvases](#canvases)).
+
+| Function | Notes |
+| --- | --- |
+| `setBlendMode(mode, alphamode)` / `getBlendMode()` | How drawing combines with what's already there. `alphamode` defaults to `"alphamultiply"`. Persists across frames. |
+
+| `mode` | Effect |
+| --- | --- |
+| `"alpha"` | The default. Normal transparency. |
+| `"add"` | Adds the color, for glows and lights. The alpha underneath is kept. |
+| `"subtract"` | Subtracts the color. The alpha underneath is kept. |
+| `"multiply"` | Multiplies by the color, which darkens. It only works with `"premultiplied"`; with `"alphamultiply"` it's an error. |
+| `"screen"` | The inverse of multiply, which lightens. |
+| `"replace"` | Writes over what's there, alpha included, without blending. With `"alphamultiply"`, the color is still multiplied by its alpha. |
+
+`alphamode` is `"alphamultiply"` for colors that still need to be multiplied by their alpha, which is true of everything except canvases, or `"premultiplied"` for colors that already are.
+
 ### Later passes
 
 These are planned for later:
 
-- canvases (render targets)
 - shaders
-- blend modes
 - scissor and stencil
 - sprite batches and meshes
 - particles
 - arcs and rounded rectangles
 - colored text
-- screenshots
+- screenshots, and reading a canvas's pixels (`Canvas:newImageData`)
 
 ## pg.window
 
@@ -471,6 +534,13 @@ On the web, browsers limit what a page can do:
   - `openURL` only opens `http`, `https` and `mailto` URLs. Love2D opens any URL, including `file` URLs, which can open the save directory in a file manager but can also run programs.
   - `getOS` returns `"Web"` on the web, as love.js does. `vibrate` only works on the web.
   - On the web, `getClipboardText` only sees text the player pasted into the page.
+- **Graphics:**
+  - `clear()` with no arguments clears the screen to the background color. Love2D clears it to transparent black. A canvas clears to transparent black in both.
+  - Only one canvas can be active at a time, and canvases have no depth or stencil buffer. `setCanvas` doesn't take several canvases, a table of settings, or a mipmap level.
+  - Canvases are always 8-bit RGBA, with no mipmaps. `newCanvas` doesn't take the `type`, `format`, `readable` or `mipmaps` settings.
+  - On the web, canvases have no MSAA, because miniquad uses WebGL 1 there.
+  - The Canvas that `getCanvas` returns is `==` to the one passed to `setCanvas`, but it's a different object, so it doesn't work as a key into a table keyed by the original.
+  - There are no `"lighten"` or `"darken"` blend modes, because miniquad has no min or max blend equation.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.

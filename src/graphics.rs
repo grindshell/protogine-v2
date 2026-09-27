@@ -2,15 +2,27 @@
 //!
 //! This is the engine side of `pg.graphics`; `api::graphics` maps Lua arguments onto it.
 //! Every draw call runs under the current transform, pushed onto macroquad's model-matrix stack
-//! just for that call.
+//! just for that call, and with the current blend mode's material.
+//!
+//! macroquad batches draw calls and only runs them when the camera changes or the frame ends.
+//! Switching the target (the screen or a canvas) switches the camera, so every pending draw
+//! call belongs to the current target.
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, sync::OnceLock};
 
-use macroquad::{models::Vertex, prelude::*, text::Font as MqFont};
+use macroquad::{
+    miniquad::{BlendFactor, BlendState, BlendValue, Equation, PassAction, gl},
+    models::Vertex,
+    prelude::*,
+    text::Font as MqFont,
+};
 
 /// Love2D caps the transform stack at 64 entries.
 pub const MAX_STACK_DEPTH: usize = 64;
 pub const DEFAULT_FONT_SIZE: u16 = 16;
+
+/// `GL_MAX_SAMPLES`, which miniquad doesn't define.
+const GL_MAX_SAMPLES: u32 = 0x8D57;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ShapeMode {
@@ -23,6 +35,127 @@ pub enum Align {
     Left,
     Center,
     Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Alpha,
+    Add,
+    Subtract,
+    Multiply,
+    Screen,
+    Replace,
+}
+
+/// Whether drawn colors still need multiplying by their alpha (`Multiply`, Love2D's
+/// `"alphamultiply"`) or already are (`Premultiplied`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AlphaMode {
+    Multiply,
+    Premultiplied,
+}
+
+/// The blend state for one blend mode and alpha mode, as Love2D 11 sets it up.
+fn blend_params(mode: BlendMode, alpha: AlphaMode) -> PipelineParams {
+    use BlendFactor::{One, OneMinusValue, Value, Zero};
+    use BlendValue::{DestinationColor, SourceAlpha, SourceColor};
+    let (equation, src_rgb, src_alpha, dst_rgb, dst_alpha) = match mode {
+        BlendMode::Alpha => (
+            Equation::Add,
+            One,
+            One,
+            OneMinusValue(SourceAlpha),
+            OneMinusValue(SourceAlpha),
+        ),
+        BlendMode::Add => (Equation::Add, One, Zero, One, One),
+        BlendMode::Subtract => (Equation::ReverseSubtract, One, Zero, One, One),
+        BlendMode::Multiply => (
+            Equation::Add,
+            Value(DestinationColor),
+            Value(DestinationColor),
+            Zero,
+            Zero,
+        ),
+        BlendMode::Screen => (
+            Equation::Add,
+            One,
+            One,
+            OneMinusValue(SourceColor),
+            OneMinusValue(SourceColor),
+        ),
+        BlendMode::Replace => (Equation::Add, One, One, Zero, Zero),
+    };
+    // Colors that aren't premultiplied get multiplied by their alpha on the way in.
+    let src_rgb = match (src_rgb, alpha) {
+        (One, AlphaMode::Multiply) => Value(SourceAlpha),
+        (factor, _) => factor,
+    };
+    PipelineParams {
+        color_blend: Some(BlendState::new(equation, src_rgb, dst_rgb)),
+        alpha_blend: Some(BlendState::new(equation, src_alpha, dst_alpha)),
+        ..Default::default()
+    }
+}
+
+/// macroquad's default shader, with a medium-precision `uv` so large textures sample correctly
+/// on phones.
+const VERTEX_SHADER: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+varying lowp vec4 color;
+varying mediump vec2 uv;
+
+uniform mat4 Model;
+uniform mat4 Projection;
+
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
+
+const FRAGMENT_SHADER: &str = r#"#version 100
+varying lowp vec4 color;
+varying mediump vec2 uv;
+
+uniform sampler2D Texture;
+
+void main() {
+    gl_FragColor = color * texture2D(Texture, uv);
+}"#;
+
+/// The material that draws with a blend mode. macroquad's default material blends alpha like
+/// color, which leaves translucent drawing in a canvas too transparent, so every draw uses one
+/// of these.
+///
+/// Each is created on first use and never freed: macroquad panics if a pending draw call's
+/// pipeline is gone, and a game that stops mid-frame leaves draw calls pending.
+fn blend_material(mode: BlendMode, alpha: AlphaMode) -> &'static Material {
+    const COUNT: usize = 12;
+    static MATERIALS: [OnceLock<Material>; COUNT] = [const { OnceLock::new() }; COUNT];
+    MATERIALS[mode as usize * 2 + alpha as usize].get_or_init(|| {
+        let shader = ShaderSource::Glsl {
+            vertex: VERTEX_SHADER,
+            fragment: FRAGMENT_SHADER,
+        };
+        let params = MaterialParams {
+            pipeline_params: blend_params(mode, alpha),
+            ..Default::default()
+        };
+        load_material(shader, params).expect("the blend shader is valid GLSL 100")
+    })
+}
+
+/// Reads a GL limit such as `GL_MAX_TEXTURE_SIZE`.
+fn gl_limit(name: u32) -> i32 {
+    let mut value = 0;
+    // SAFETY: the window, and so the GL context, exists whenever `Graphics` does, and this only
+    // reads state.
+    unsafe { gl::glGetIntegerv(name, &mut value) };
+    value
 }
 
 /// Position, rotation, scale, origin offset and shear, as taken by `pg.graphics.draw`, `print`
@@ -111,6 +244,74 @@ impl Image {
     }
 }
 
+/// An offscreen target: `width` by `height` units, with `dpi_scale` pixels per unit.
+pub struct Canvas {
+    target: RenderTarget,
+    width: f32,
+    height: f32,
+    dpi_scale: f32,
+    /// MSAA samples, 1 for none.
+    samples: i32,
+    filter: Cell<FilterMode>,
+}
+
+impl Canvas {
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    pub fn pixel_width(&self) -> f32 {
+        self.target.texture.width()
+    }
+
+    pub fn pixel_height(&self) -> f32 {
+        self.target.texture.height()
+    }
+
+    pub fn dpi_scale(&self) -> f32 {
+        self.dpi_scale
+    }
+
+    /// MSAA samples, or 0 without MSAA, as Love2D reports it.
+    pub fn msaa(&self) -> i32 {
+        if self.samples > 1 { self.samples } else { 0 }
+    }
+
+    pub fn filter(&self) -> FilterMode {
+        self.filter.get()
+    }
+
+    pub fn set_filter(&self, filter: FilterMode) {
+        self.target.texture.set_filter(filter);
+        self.filter.set(filter);
+    }
+}
+
+/// Drawing into a canvas: its units map onto its pixels, with y pointing down.
+impl Camera for Canvas {
+    fn matrix(&self) -> Mat4 {
+        // GL puts a texture's first row at the bottom of clip space, and drawing a texture puts
+        // its first row at the top, so y = 0 goes to the bottom here to come out on top.
+        Mat4::orthographic_rh_gl(0.0, self.width, 0.0, self.height, -1.0, 1.0)
+    }
+
+    fn depth_enabled(&self) -> bool {
+        false
+    }
+
+    fn render_pass(&self) -> Option<RenderPass> {
+        Some(self.target.render_pass.clone())
+    }
+
+    fn viewport(&self) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
+}
+
 pub struct Font {
     /// `None` is macroquad's built-in font.
     font: Option<MqFont>,
@@ -193,8 +394,15 @@ pub struct Graphics {
     pub point_size: f32,
     pub font: Rc<Font>,
     pub default_filter: FilterMode,
+    blend: (BlendMode, AlphaMode),
+    /// The active canvas, or `None` for the screen.
+    canvas: Option<Rc<Canvas>>,
     transform: Mat4,
     stack: Vec<Mat4>,
+    /// The largest texture side the GPU supports, or 0 if it didn't say.
+    max_texture_size: i32,
+    /// The most MSAA samples a canvas can have; 1 where it can't have any.
+    max_samples: i32,
 }
 
 impl Graphics {
@@ -207,20 +415,133 @@ impl Graphics {
             point_size: 1.0,
             font: Rc::new(Font::builtin(DEFAULT_FONT_SIZE, FilterMode::Linear)),
             default_filter: FilterMode::Linear,
+            blend: (BlendMode::Alpha, AlphaMode::Multiply),
+            canvas: None,
             transform: Mat4::IDENTITY,
             stack: Vec::new(),
+            max_texture_size: gl_limit(gl::GL_MAX_TEXTURE_SIZE),
+            // WebGL 1 has no multisampled render targets.
+            max_samples: if cfg!(target_arch = "wasm32") {
+                1
+            } else {
+                gl_limit(GL_MAX_SAMPLES).max(1)
+            },
         }
     }
 
-    /// Clears to the background color and resets the transform stack, before `pg.draw`.
+    /// Clears the screen to the background color and resets the transform stack, before
+    /// `pg.draw`. The screen is cleared even if the game left a canvas active.
     pub fn begin_frame(&mut self) {
+        if self.canvas.is_some() {
+            set_default_camera();
+        }
         clear_background(self.background);
+        if let Some(canvas) = &self.canvas {
+            set_camera(canvas.as_ref());
+        }
         self.transform = Mat4::IDENTITY;
         self.stack.clear();
     }
 
-    pub fn clear(&self, color: Color) {
-        clear_background(color);
+    /// Hands macroquad back to the engine's screens: drawing to the screen, with its default
+    /// material.
+    pub fn shutdown(&mut self) {
+        self.canvas = None;
+        set_default_camera();
+        gl_use_default_material();
+    }
+
+    /// Clears the active target. With no color, the screen clears to the background color and
+    /// a canvas to transparent black.
+    pub fn clear(&self, color: Option<Color>) {
+        let fallback = if self.canvas.is_some() {
+            Color::new(0.0, 0.0, 0.0, 0.0)
+        } else {
+            self.background
+        };
+        clear_background(color.unwrap_or(fallback));
+    }
+
+    // ---- blending ----
+
+    pub fn blend_mode(&self) -> (BlendMode, AlphaMode) {
+        self.blend
+    }
+
+    pub fn set_blend_mode(&mut self, mode: BlendMode, alpha: AlphaMode) -> Result<(), String> {
+        if mode == BlendMode::Multiply && alpha == AlphaMode::Multiply {
+            return Err("the 'multiply' blend mode must be used with premultiplied alpha".into());
+        }
+        self.blend = (mode, alpha);
+        Ok(())
+    }
+
+    // ---- canvases ----
+
+    /// A canvas cleared to transparent black. `msaa` is the number of samples asked for; 0 or 1
+    /// means none.
+    pub fn new_canvas(
+        &self,
+        width: f32,
+        height: f32,
+        dpi_scale: f32,
+        msaa: i32,
+    ) -> Result<Canvas, String> {
+        let pixels = |units: f32| (units * dpi_scale).round().max(1.0);
+        let (pixel_width, pixel_height) = (pixels(width), pixels(height));
+        let max = self.max_texture_size as f32;
+        if max > 0.0 && (pixel_width > max || pixel_height > max) {
+            return Err(format!(
+                "{pixel_width}x{pixel_height} pixels is larger than this GPU's limit of {max} \
+                 pixels on a side"
+            ));
+        }
+        let samples = if msaa > 1 {
+            msaa.min(self.max_samples)
+        } else {
+            1
+        };
+        let target = render_target_ex(
+            pixel_width as u32,
+            pixel_height as u32,
+            RenderTargetParams {
+                sample_count: samples,
+                depth: false,
+            },
+        );
+        target.texture.set_filter(self.default_filter);
+
+        // New render textures hold whatever was in that memory natively.
+        // SAFETY: the borrow ends within this block and nothing else touches macroquad meanwhile.
+        let gl = unsafe { get_internal_gl() }.quad_context;
+        gl.begin_pass(
+            Some(target.render_pass.raw_miniquad_id()),
+            PassAction::clear_color(0.0, 0.0, 0.0, 0.0),
+        );
+        gl.end_render_pass();
+
+        Ok(Canvas {
+            target,
+            width,
+            height,
+            dpi_scale,
+            samples,
+            filter: Cell::new(self.default_filter),
+        })
+    }
+
+    pub fn canvas(&self) -> Option<Rc<Canvas>> {
+        self.canvas.clone()
+    }
+
+    /// Makes `canvas`, or the screen for `None`, the target of drawing. Returns the previous
+    /// canvas.
+    pub fn set_canvas(&mut self, canvas: Option<Rc<Canvas>>) -> Option<Rc<Canvas>> {
+        match &canvas {
+            Some(canvas) => set_camera(canvas.as_ref()),
+            None => set_default_camera(),
+        }
+        std::mem::replace(&mut self.canvas, canvas)
     }
 
     // ---- transforms ----
@@ -329,8 +650,36 @@ impl Graphics {
 
     // ---- images and text ----
 
-    /// Draws with `local` (a placement or a Transform's matrix) on top of the current transform.
-    pub fn draw_texture(&self, texture: &Texture2D, source: Option<Rect>, local: Mat4) {
+    /// Draws an image, or the part of it under `quad`, with `local` (a placement or a
+    /// Transform's matrix) on top of the current transform.
+    pub fn draw_image(&self, texture: &Texture2D, quad: Option<Rect>, local: Mat4) {
+        let size = quad.map_or(texture.size(), |q| q.size());
+        self.draw_texture(texture, quad, size, local);
+    }
+
+    /// Like [`Graphics::draw_image`], for a canvas. `quad` is in the canvas's units.
+    pub fn draw_canvas(
+        &self,
+        canvas: &Rc<Canvas>,
+        quad: Option<Rect>,
+        local: Mat4,
+    ) -> Result<(), String> {
+        if self
+            .canvas
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(active, canvas))
+        {
+            return Err("cannot draw a Canvas into itself".into());
+        }
+        let s = canvas.dpi_scale;
+        let source = quad.map(|q| Rect::new(q.x * s, q.y * s, q.w * s, q.h * s));
+        let size = quad.map_or(vec2(canvas.width, canvas.height), |q| q.size());
+        self.draw_texture(&canvas.target.texture, source, size, local);
+        Ok(())
+    }
+
+    /// Draws `source` (in pixels; all of `texture` for `None`) stretched to `size` units.
+    fn draw_texture(&self, texture: &Texture2D, source: Option<Rect>, size: Vec2, local: Mat4) {
         self.with_transform(self.transform * local, || {
             draw_texture_ex(
                 texture,
@@ -339,6 +688,7 @@ impl Graphics {
                 self.color,
                 DrawTextureParams {
                     source,
+                    dest_size: Some(size),
                     ..Default::default()
                 },
             );
@@ -369,8 +719,10 @@ impl Graphics {
         });
     }
 
-    /// Runs `draw` with `matrix` as macroquad's model matrix.
+    /// Runs `draw` with `matrix` as macroquad's model matrix, and the blend mode's material.
     fn with_transform(&self, matrix: Mat4, draw: impl FnOnce()) {
+        // Set on every draw, since macroquad's own UI pass resets the material each frame.
+        gl_use_material(blend_material(self.blend.0, self.blend.1));
         // SAFETY: each borrow of the GL context ends before `draw` touches macroquad again.
         unsafe { get_internal_gl() }
             .quad_gl
