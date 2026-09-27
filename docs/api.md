@@ -2,7 +2,7 @@
 
 **Status:** first design pass. It covers the core lifecycle, graphics, input, audio, math, the filesystem and the system.
 
-- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics` (including canvases and blend modes), `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system`. `games/demo` exercises them.
+- **Implemented:** everything in this document: games and files, the lifecycle, `pg.graphics` (including canvases, blend modes and shaders), `pg.window`, `pg.timer`, `pg.event`, `pg.keyboard`, `pg.mouse`, `pg.touch`, `pg.audio`, `pg.math`, `pg.filesystem` and `pg.system`. `games/demo` exercises them.
 
 ```lua
 local player = { x = 100, y = 100, speed = 200 }
@@ -250,11 +250,130 @@ A canvas with translucent pixels needs the `"premultiplied"` alpha mode to be dr
 
 `alphamode` is `"alphamultiply"` for colors that still need to be multiplied by their alpha, which is true of everything except canvases, or `"premultiplied"` for colors that already are.
 
+### Shaders
+
+A `Shader` is a small GPU program that changes how things are drawn. Its pixel stage computes the color of every pixel drawn, and its vertex stage can move vertices. Shaders are written in GLSL, wrapped the way Love2D wraps it, so Love2D shaders work unchanged: the engine supplies `main()` and the declarations, and the game writes one or both of these functions.
+
+```glsl
+// The pixel stage returns the pixel's color. This is the default:
+vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
+{
+    return Texel(tex, texture_coords) * color;
+}
+
+// The vertex stage returns the vertex's position in clip space. This is the default:
+vec4 position(mat4 transform_projection, vec4 vertex_position)
+{
+    return transform_projection * vertex_position;
+}
+```
+
+`effect`'s arguments:
+
+- `color` is the draw color, from `setColor`.
+- `tex` is the image being drawn. Shapes are drawn with a 1x1 white image, so `Texel` returns white for them.
+- `texture_coords` are coordinates in `tex`, from 0 to 1. For a quad they're coordinates in the whole image, and for text they're coordinates in the font's glyph atlas.
+- `screen_coords` is the pixel's position on the screen, or in the active canvas. It's in pixels, not units, with the origin at the top left.
+
+This shader fades a sprite to gray and back:
+
+```lua
+local sprite, shader
+
+function pg.load()
+  sprite = pg.graphics.newImage("player.png")
+  shader = pg.graphics.newShader([[
+    extern number time;
+
+    vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
+    {
+        vec4 pixel = Texel(tex, texture_coords) * color;
+        float gray = dot(pixel.rgb, vec3(0.299, 0.587, 0.114));
+        return vec4(mix(pixel.rgb, vec3(gray), 0.5 + 0.5 * sin(time)), pixel.a);
+    }
+  ]])
+end
+
+function pg.draw()
+  shader:send("time", pg.timer.getTime())
+  pg.graphics.setShader(shader)
+  pg.graphics.draw(sprite, 100, 100)
+  pg.graphics.setShader()
+end
+```
+
+| Function | Notes |
+| --- | --- |
+| `newShader(code)` / `newShader(pixelcode, vertexcode)` | Returns a `Shader`. Each argument is GLSL code, or the path of a file that holds it. A string with a `vec4 effect(` function is pixel code, and one with a `vec4 position(` function is vertex code, whatever the argument order. One string can hold both, with `#ifdef PIXEL` and `#ifdef VERTEX` around each. A stage that isn't given uses the default above. Code with neither function is an error, and so is code that doesn't compile, with the GPU's message. Line numbers in the message count from the start of the game's code. |
+| `setShader(shader)` / `setShader()` | Draws with `shader`, or with the default again. Persists across frames. |
+| `getShader()` | The active Shader, or `nil` for the default. |
+
+- **What a shader applies to:** everything drawn while it's active: shapes, images, canvases and text. `clear` ignores it. Switching canvases keeps it, like every other setting.
+- **Colors:** return colors that aren't premultiplied by their alpha. Blending treats the color `effect` returns like any other, so under `"alphamultiply"` it's multiplied by its alpha.
+- **Drawing into a canvas that the shader reads:** drawing into the active canvas with a shader that has it as an `Image` uniform is an error, because the GPU can't read and write the same image at once.
+- **Compiling is slow,** especially on the web, so create shaders once, for example in `pg.load`, rather than every frame. A shader also compiles again the first time it draws with each blend mode.
+
+#### The shader language
+
+Shaders are GLSL ES 1.00 (Love2D's `glsl1` language) on every platform, because the web build uses WebGL 1.
+
+- Loops need constant bounds, and there's no implicit conversion from `int` to `float`, so write `1.0` rather than `1`.
+- `#pragma language glsl3` is an error. So is `void effect()`, Love2D's way of drawing into several canvases at once, since only one canvas can be active.
+- Desktop GPU drivers accept some code that WebGL rejects, so test shaders in the web build too.
+- In the pixel stage, floats are `highp` where the GPU supports it, and `mediump` otherwise.
+- `dFdx`, `dFdy` and `fwidth` work in the pixel stage where the GPU supports them, which is nearly everywhere.
+
+On top of GLSL, the wrapper defines Love2D's names. They keep Love2D's `love_` prefix, so shaders port unchanged. Names that start with `pg_` are reserved for the engine.
+
+| Name | Meaning |
+| --- | --- |
+| `number`, `Image`, `extern` | Aliases for `float`, `sampler2D` and `uniform`. |
+| `Texel(image, coords)` | Reads a color from an image, like `texture2D`. |
+| `MainTex` | The image being drawn: `effect`'s `tex`. Pixel stage only. |
+| `VertexPosition` | The vertex's position, in the units of the screen or the active canvas. The transform has already been applied, as in Love2D's batched drawing. Vertex stage only. |
+| `VertexTexCoord`, `VertexColor` | The vertex's texture coordinates (in `xy`) and its color, which includes the `setColor` color. Vertex stage only. |
+| `ConstantColor` | Always white, since `VertexColor` already includes the draw color. Vertex stage only. |
+| `VaryingTexCoord`, `VaryingColor` | What the vertex stage passes to the pixel stage. `effect`'s `texture_coords` and `color` come from them. |
+| `TransformMatrix` | Always the identity, since `VertexPosition` is already transformed. |
+| `ProjectionMatrix` | Maps the screen's or the active canvas's units to clip space. |
+| `TransformProjectionMatrix` | `ProjectionMatrix * TransformMatrix`: `position`'s `transform_projection`. |
+| `love_ScreenSize` | Its `xy` is the size of the screen, or of the active canvas, in pixels. |
+| `love_PixelCoord` | The pixel's position in pixels from the top left: `effect`'s `screen_coords`. Pixel stage only. |
+| `love_PixelColor`, `love_Position` | Other names for `gl_FragColor` and `gl_Position`. |
+| `gammaToLinear`, `linearToGamma` | Convert a color between sRGB and linear RGB. `Precise` and `Fast` versions exist too, such as `gammaToLinearPrecise`. |
+| `gammaCorrectColor`, `unGammaCorrectColor` | Do nothing, because the engine doesn't render gamma-correctly. |
+| `PIXEL`, `VERTEX` | Defined in the pixel and vertex stage respectively, for `#ifdef`. |
+
+#### Sending values
+
+`Shader` methods:
+
+| Method | Notes |
+| --- | --- |
+| `send(name, value, ...)` | Sets a uniform: a variable declared `extern` or `uniform`. Draws before the `send` keep the old value. For an array, the values fill its elements in order, and values beyond its end are ignored, as in Love2D. |
+| `send(name, layout, matrix, ...)` | Sends matrices given as tables, where `layout` says whether each inner table is a `"row"` (the default) or a `"column"`. |
+| `sendColor(name, color, ...)` | Sends `{r, g, b}` or `{r, g, b, a}` tables to a `vec3` or `vec4` uniform. It's the same as `send`, because the engine doesn't render gamma-correctly. |
+| `hasUniform(name)` | Whether `send` accepts `name`. |
+| `getWarnings()` | The GPU compiler's warnings about the code, which are often empty. |
+
+| Uniform type | Value |
+| --- | --- |
+| `float` | A number. |
+| `vec2`, `vec3`, `vec4` | A table of 2, 3 or 4 numbers. |
+| `int`, `ivec2`, `ivec3`, `ivec4` | A whole number, or a table of them. |
+| `bool`, `bvec2`, `bvec3`, `bvec4` | A boolean, or a table of them. |
+| `mat4` | A table of 16 numbers, a table of four tables of four, or a `Transform`. |
+| `Image` (`sampler2D`) | An `Image` or a `Canvas`. |
+
+- **Unknown names:** sending to a name the shader doesn't use is an error. GPU compilers remove uniforms that the code never reads, so a declared but unused uniform doesn't exist either. Check with `hasUniform`.
+- **Starting values:** uniforms start at zero until they're sent, and an `Image` uniform that hasn't been sent reads as white.
+- **Wrong values:** a value of the wrong type or size is an error.
+- **Types `send` can't set:** `mat2` and `mat3`, because miniquad can't set them, and arrays of images. Sending to one is an error.
+
 ### Later passes
 
 These are planned for later:
 
-- shaders
 - scissor and stencil
 - sprite batches and meshes
 - particles
@@ -539,8 +658,10 @@ On the web, browsers limit what a page can do:
   - Only one canvas can be active at a time, and canvases have no depth or stencil buffer. `setCanvas` doesn't take several canvases, a table of settings, or a mipmap level.
   - Canvases are always 8-bit RGBA, with no mipmaps. `newCanvas` doesn't take the `type`, `format`, `readable` or `mipmaps` settings.
   - On the web, canvases have no MSAA, because miniquad uses WebGL 1 there.
-  - The Canvas that `getCanvas` returns is `==` to the one passed to `setCanvas`, but it's a different object, so it doesn't work as a key into a table keyed by the original.
+  - The Canvas that `getCanvas` returns, and the Shader that `getShader` returns, are `==` to the ones passed to `setCanvas` and `setShader`, but they're different objects, so they don't work as keys into tables keyed by the originals.
   - There are no `"lighten"` or `"darken"` blend modes, because miniquad has no min or max blend equation.
+  - Shaders are GLSL ES 1.00 (Love2D's `glsl1`) on every platform, because the web uses WebGL 1. `#pragma language glsl3` is an error, and so is `void effect()`, which draws into several canvases at once.
+  - `send` can't set `mat2` or `mat3` uniforms or arrays of images, and doesn't take `Data` objects. The shader language has no `ArrayImage`, `CubeImage`, `VolumeImage` or `DepthImage`, and no `NormalMatrix`, `love_Canvases` or `VideoTexel`. There's no `validateShader`.
 - **Smaller API differences:**
   - Quads are pixel rectangles with no reference dimensions.
   - `setFilter` takes one filter mode, not separate min and mag filters, because macroquad has only one.

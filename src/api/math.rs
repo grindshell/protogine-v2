@@ -407,7 +407,8 @@ impl std::ops::Mul for Transform {
     }
 }
 
-const LAYOUTS: &[(&str, bool)] = &[("row", false), ("column", true)];
+/// Matrix layouts, as whether they're column-major.
+pub(super) const LAYOUTS: &[(&str, bool)] = &[("row", false), ("column", true)];
 
 methods!(Transform {
     "apply" => |args| {
@@ -496,34 +497,54 @@ fn set_matrix(args: &mut Args) -> LuaResult<usize> {
     } else {
         (false, 2)
     };
-    let mut elements = [0.0f32; 16];
-    if let Some(table) = args.table(start)? {
-        let nested = table.raw_geti::<LuaValue>(1)?.is_table();
-        for (i, e) in elements.iter_mut().enumerate() {
-            let (outer, inner) = (i as i64 / 4 + 1, i as i64 % 4 + 1);
-            let value: LuaValue = if !nested {
-                table.raw_geti(i as i64 + 1)?
-            } else if table.raw_geti::<LuaValue>(outer)?.is_table() {
-                table.raw_geti::<LuaTable>(outer)?.raw_geti(inner)?
-            } else {
-                LuaValue::nil()
-            };
-            match value.as_number() {
-                Some(n) => *e = n as f32,
-                None => return Err(args.arg_error(start, "matrix table must hold 16 numbers")),
+    let matrix = match matrix_table(args, start, column_major)? {
+        Some(matrix) => matrix,
+        None => {
+            let mut elements = [0.0f32; 16];
+            for (i, e) in elements.iter_mut().enumerate() {
+                *e = args.f32(start + i)?;
             }
+            from_elements(&elements, column_major)
         }
-    } else {
-        for (i, e) in elements.iter_mut().enumerate() {
-            *e = args.f32(start + i)?;
+    };
+    update(args, |m| *m = matrix)
+}
+
+/// The matrix in the table at `index`: 16 numbers, or four tables of four, in row-major order
+/// unless `column_major`. `None` if that argument isn't a table.
+pub(super) fn matrix_table(
+    args: &mut Args,
+    index: usize,
+    column_major: bool,
+) -> LuaResult<Option<Mat4>> {
+    let Some(table) = args.table(index)? else {
+        return Ok(None);
+    };
+    let nested = table.raw_geti::<LuaValue>(1)?.is_table();
+    let mut elements = [0.0f32; 16];
+    for (i, e) in elements.iter_mut().enumerate() {
+        let (outer, inner) = (i as i64 / 4 + 1, i as i64 % 4 + 1);
+        let value: LuaValue = if !nested {
+            table.raw_geti(i as i64 + 1)?
+        } else if table.raw_geti::<LuaValue>(outer)?.is_table() {
+            table.raw_geti::<LuaTable>(outer)?.raw_geti(inner)?
+        } else {
+            LuaValue::nil()
+        };
+        match value.as_number() {
+            Some(n) => *e = n as f32,
+            None => return Err(args.arg_error(index, "matrix table must hold 16 numbers")),
         }
     }
+    Ok(Some(from_elements(&elements, column_major)))
+}
+
+fn from_elements(elements: &[f32; 16], column_major: bool) -> Mat4 {
     // `from_cols_array` reads columns, so row-major input needs transposing.
-    let matrix = Mat4::from_cols_array(&elements);
-    let matrix = if column_major {
+    let matrix = Mat4::from_cols_array(elements);
+    if column_major {
         matrix
     } else {
         matrix.transpose()
-    };
-    update(args, |m| *m = matrix)
+    }
 }

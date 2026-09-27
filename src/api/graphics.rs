@@ -1,4 +1,4 @@
-//! `pg.graphics`: drawing state, shapes, images, canvases, text and transforms.
+//! `pg.graphics`: drawing state, shapes, images, canvases, shaders, text and transforms.
 
 use std::rc::Rc;
 
@@ -7,9 +7,17 @@ use macroquad::prelude::{
     Color, FilterMode, Mat4, Rect, Texture2D, screen_dpi_scale, screen_height, screen_width,
 };
 
-use super::{Args, Module, SharedHost, math::Transform, number};
-use crate::graphics::{
-    self as gfx, Align, AlphaMode, BlendMode, DEFAULT_FONT_SIZE, Graphics, Placement, ShapeMode,
+use super::{
+    Args, Module, SharedHost,
+    math::{LAYOUTS, Transform, matrix_table},
+    number,
+};
+use crate::{
+    graphics::{
+        self as gfx, Align, AlphaMode, BlendMode, DEFAULT_FONT_SIZE, Graphics, Placement, ShapeMode,
+    },
+    shader::{self, Kind, ShaderTexture},
+    vfs,
 };
 
 const SHAPE_MODES: &[(&str, ShapeMode)] = &[("fill", ShapeMode::Fill), ("line", ShapeMode::Line)];
@@ -213,6 +221,179 @@ enum Drawable {
 }
 
 #[derive(LuaUserData)]
+#[lua_impl(PartialEq)]
+pub struct Shader {
+    shader: Rc<shader::Shader>,
+}
+
+/// `getShader` returns new userdata for the active shader, so equality compares the underlying
+/// shader rather than the userdata.
+impl PartialEq for Shader {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.shader, &other.shader)
+    }
+}
+
+methods!(Shader {
+    "send" => |args| send(args, false),
+    "sendColor" => |args| send(args, true),
+    "hasUniform" => |args| {
+        let name = args.string(2)?;
+        let sendable = args.this(|s: &mut Shader| {
+            s.shader
+                .uniform(&name)
+                .is_some_and(|(_, u)| !matches!(u.kind, Kind::Unsupported(_)))
+        })?;
+        args.ret(sendable)
+    },
+    "getWarnings" => |args| {
+        let warnings = args.this(|s: &mut Shader| s.shader.warnings().to_string())?;
+        args.ret(warnings)
+    },
+});
+
+/// `shader:send(name, value, ...)`, or `shader:sendColor(name, color, ...)` with `color`. Values
+/// after the first fill the following elements of an array.
+fn send(args: &mut Args, color: bool) -> LuaResult<usize> {
+    let name = args.string(2)?;
+    let shader = args.this(|s: &mut Shader| s.shader.clone())?;
+    let Some((index, uniform)) = shader.uniform(&name) else {
+        return Err(args.error(format!(
+            "shader uniform '{name}' does not exist (a common cause is declaring it but never \
+             using it)"
+        )));
+    };
+    if color && !matches!(uniform.kind, Kind::Float(3 | 4)) {
+        return Err(args.error("sendColor can only be used on vec3 or vec4 uniforms"));
+    }
+    // The values start at argument 3, after `self` and the name, or 4 after a matrix layout.
+    let values =
+        |args: &Args, first: usize| first..=args.len().max(first).min(first + uniform.count - 1);
+    match &uniform.kind {
+        Kind::Unsupported(why) => return Err(args.error(format!("can't send to '{name}': {why}"))),
+        Kind::Image => {
+            let texture =
+                if let Some(texture) = args.with_userdata(3, |i: &Image| i.image.texture.clone()) {
+                    ShaderTexture::Image(texture)
+                } else if let Some(canvas) = args.with_userdata(3, |c: &Canvas| c.canvas.clone()) {
+                    ShaderTexture::Canvas(canvas)
+                } else {
+                    return Err(args.type_error(3, "Image or Canvas"));
+                };
+            shader.set_texture(index, texture);
+        }
+        Kind::Mat4 => {
+            let (column_major, first) = if args.get(3).is_some_and(|v| v.is_string()) {
+                (args.option(3, "matrix layout", LAYOUTS)?, 4)
+            } else {
+                (false, 3)
+            };
+            let mut floats = Vec::new();
+            for i in values(args, first) {
+                let matrix = match args.with_userdata(i, |t: &Transform| t.matrix) {
+                    Some(matrix) => matrix,
+                    None => match matrix_table(args, i, column_major)? {
+                        Some(matrix) => matrix,
+                        None => return Err(args.type_error(i, "table or Transform")),
+                    },
+                };
+                floats.extend(matrix.to_cols_array());
+            }
+            shader.set_floats(index, &floats);
+        }
+        &Kind::Float(n) => {
+            let mut floats = Vec::new();
+            for i in values(args, 3) {
+                if n == 1 {
+                    floats.push(args.f32(i)?);
+                } else {
+                    floats.extend(components(args, i, n, "numbers", |v| {
+                        v.as_number().map(|n| n as f32)
+                    })?);
+                }
+            }
+            shader.set_floats(index, &floats);
+        }
+        &Kind::Int(n) => {
+            let mut ints = Vec::new();
+            for i in values(args, 3) {
+                if n == 1 {
+                    ints.push(args.integer(i)? as i32);
+                } else {
+                    ints.extend(components(args, i, n, "whole numbers", whole_number)?);
+                }
+            }
+            shader.set_ints(index, &ints);
+        }
+        &Kind::Bool(n) => {
+            let mut ints = Vec::new();
+            for i in values(args, 3) {
+                if n == 1 {
+                    match args.get(i).and_then(|v| v.as_boolean()) {
+                        Some(b) => ints.push(i32::from(b)),
+                        None => return Err(args.type_error(i, "boolean")),
+                    }
+                } else {
+                    ints.extend(components(args, i, n, "booleans", |v| {
+                        v.as_boolean().map(i32::from)
+                    })?);
+                }
+            }
+            shader.set_ints(index, &ints);
+        }
+    }
+    Ok(0)
+}
+
+/// The first `n` elements of the table at `index`, each read by `read`, which fails with a
+/// message about `what` the table must hold.
+fn components<T>(
+    args: &mut Args,
+    index: usize,
+    n: usize,
+    what: &str,
+    read: impl Fn(&LuaValue) -> Option<T>,
+) -> LuaResult<Vec<T>> {
+    let Some(table) = args.table(index)? else {
+        return Err(args.type_error(index, "table"));
+    };
+    let mut elements = Vec::with_capacity(n);
+    for i in 1..=n {
+        let value: LuaValue = table.raw_geti(i as i64)?;
+        match read(&value) {
+            Some(element) => elements.push(element),
+            None => return Err(args.arg_error(index, format!("table must hold {n} {what}"))),
+        }
+    }
+    Ok(elements)
+}
+
+/// A number with no fractional part, as an `int` uniform takes.
+fn whole_number(value: &LuaValue) -> Option<i32> {
+    match (value.as_integer(), value.as_number()) {
+        (Some(i), _) => Some(i as i32),
+        (None, Some(n)) if n.fract() == 0.0 => Some(n as i32),
+        _ => None,
+    }
+}
+
+/// Shader code at `index`: the contents of the file it names, or else the string itself.
+fn shader_code(args: &mut Args, host: &SharedHost, index: usize) -> LuaResult<String> {
+    let code = args.string(index)?;
+    let host = host.borrow();
+    if !host
+        .fs
+        .info(&code)
+        .is_some_and(|info| info.kind == vfs::Kind::File)
+    {
+        return Ok(code);
+    }
+    let contents = host.fs.read_string(&code);
+    drop(host);
+    contents.map_err(|e| args.error(format!("could not load shader '{code}': {e}")))
+}
+
+#[derive(LuaUserData)]
 pub struct Font {
     font: Rc<gfx::Font>,
 }
@@ -338,20 +519,17 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     function!("rectangle", |args, g| {
         let mode = args.option(1, "draw mode", SHAPE_MODES)?;
         let (x, y, w, h) = (args.f32(2)?, args.f32(3)?, args.f32(4)?, args.f32(5)?);
-        g.rectangle(mode, x, y, w, h);
-        Ok(0)
+        drawn(args, g.rectangle(mode, x, y, w, h))
     });
     function!("circle", |args, g| {
         let mode = args.option(1, "draw mode", SHAPE_MODES)?;
         let (x, y, radius) = (args.f32(2)?, args.f32(3)?, args.f32(4)?);
-        g.ellipse(mode, x, y, radius, radius);
-        Ok(0)
+        drawn(args, g.ellipse(mode, x, y, radius, radius))
     });
     function!("ellipse", |args, g| {
         let mode = args.option(1, "draw mode", SHAPE_MODES)?;
         let (x, y, rx, ry) = (args.f32(2)?, args.f32(3)?, args.f32(4)?, args.f32(5)?);
-        g.ellipse(mode, x, y, rx, ry);
-        Ok(0)
+        drawn(args, g.ellipse(mode, x, y, rx, ry))
     });
     function!("polygon", |args, g| {
         let mode = args.option(1, "draw mode", SHAPE_MODES)?;
@@ -359,21 +537,18 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
         if points.len() < 3 {
             return Err(args.error("polygon: need at least three vertices"));
         }
-        g.polygon(mode, &points);
-        Ok(0)
+        drawn(args, g.polygon(mode, &points))
     });
     function!("line", |args, g| {
         let points = args.points(1)?;
         if points.len() < 2 {
             return Err(args.error("line: need at least two points"));
         }
-        g.line(&points);
-        Ok(0)
+        drawn(args, g.line(&points))
     });
     function!("points", |args, g| {
         let points = args.points(1)?;
-        g.points(&points);
-        Ok(0)
+        drawn(args, g.points(&points))
     });
 
     // ---- images ----
@@ -418,13 +593,11 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
             None => (None, 2),
         };
         let local = local_transform(args, first)?;
-        match drawable {
+        let result = match drawable {
             Drawable::Image(texture) => g.draw_image(&texture, quad, local),
-            Drawable::Canvas(canvas) => g
-                .draw_canvas(&canvas, quad, local)
-                .map_err(|e| args.error(e))?,
-        }
-        Ok(0)
+            Drawable::Canvas(canvas) => g.draw_canvas(&canvas, quad, local),
+        };
+        drawn(args, result)
     });
 
     // ---- canvases ----
@@ -476,6 +649,43 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
         })?;
     }
 
+    // ---- shaders ----
+
+    {
+        let host = host.clone();
+        m.function("newShader", move |args| {
+            let first = shader_code(args, &host, 1)?;
+            let second = match args.get(2) {
+                Some(_) => Some(shader_code(args, &host, 2)?),
+                None => None,
+            };
+            match shader::Shader::new(&first, second.as_deref()) {
+                Ok(shader) => {
+                    args.state.push(Shader {
+                        shader: Rc::new(shader),
+                    })?;
+                    Ok(1)
+                }
+                Err(e) => Err(args.error(e)),
+            }
+        })?;
+    }
+    function!("setShader", |args, g| {
+        let shader = match args.get(1) {
+            None => None,
+            Some(_) => Some(args.userdata(1, "Shader", |s: &Shader| s.shader.clone())?),
+        };
+        g.set_shader(shader);
+        Ok(0)
+    });
+    function!("getShader", |args, g| match g.shader() {
+        Some(shader) => {
+            args.state.push(Shader { shader })?;
+            Ok(1)
+        }
+        None => args.ret(LuaValue::nil()),
+    });
+
     // ---- text ----
 
     {
@@ -514,8 +724,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     function!("print", |args, g| {
         let text = args.string(1)?;
         let local = local_transform(args, 2)?;
-        g.print(&text, local);
-        Ok(0)
+        drawn(args, g.print(&text, local))
     });
     function!("printf", |args, g| {
         let text = args.string(1)?;
@@ -535,8 +744,7 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
                 placement_at(args, x, y, 6)?.matrix()
             }
         };
-        g.printf(&text, limit, align, local);
-        Ok(0)
+        drawn(args, g.printf(&text, limit, align, local))
     });
 
     // ---- transforms ----
@@ -591,6 +799,11 @@ pub fn install(lua: &mut Lua, pg: &LuaTable, host: &SharedHost) -> LuaResult<()>
     });
 
     m.finish(pg, "graphics")
+}
+
+/// The result of a drawing function, which fails only if the active shader can't draw.
+fn drawn(args: &mut Args, result: Result<(), String>) -> LuaResult<usize> {
+    result.map(|()| 0).map_err(|e| args.error(e))
 }
 
 /// A color given as `r, g, b, a` or `{r, g, b, a}` starting at `index`; alpha defaults to 1.

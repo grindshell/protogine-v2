@@ -1,0 +1,435 @@
+diff --git a/vendor/macroquad/Cargo.toml b/vendor/macroquad/Cargo.toml
+index 372aab3..577df2c 100644
+--- a/vendor/macroquad/Cargo.toml
++++ b/vendor/macroquad/Cargo.toml
+@@ -28,12 +28,14 @@ readme = "README.md"
+ license = "MIT OR Apache-2.0"
+ repository = "https://github.com/not-fl3/macroquad"
+ 
+-[package.metadata.android]
+-assets = "examples/"
+-
+ [package.metadata.docs.rs]
+ all-features = true
+ 
++# protogine: vendored code's warnings aren't ours to fix, and the examples, tests and the
++# dependency profile are left out. See vendor/README.md.
++[lints.rust]
++warnings = "allow"
++
+ [features]
+ audio = ["quad-snd"]
+ default = []
+@@ -44,158 +46,6 @@ log-rs = ["log"]
+ name = "macroquad"
+ path = "src/lib.rs"
+ 
+-[[example]]
+-name = "3d"
+-path = "examples/3d.rs"
+-
+-[[example]]
+-name = "arkanoid"
+-path = "examples/arkanoid.rs"
+-
+-[[example]]
+-name = "asteroids"
+-path = "examples/asteroids.rs"
+-
+-[[example]]
+-name = "audio"
+-path = "examples/audio.rs"
+-
+-[[example]]
+-name = "basic_shapes"
+-path = "examples/basic_shapes.rs"
+-
+-[[example]]
+-name = "camera"
+-path = "examples/camera.rs"
+-
+-[[example]]
+-name = "camera_transformations"
+-path = "examples/camera_transformations.rs"
+-
+-[[example]]
+-name = "custom_material"
+-path = "examples/custom_material.rs"
+-
+-[[example]]
+-name = "default_font"
+-path = "examples/default_font.rs"
+-
+-[[example]]
+-name = "events"
+-path = "examples/events.rs"
+-
+-[[example]]
+-name = "exit_dialog"
+-path = "examples/exit_dialog.rs"
+-
+-[[example]]
+-name = "first_person"
+-path = "examples/first_person.rs"
+-
+-[[example]]
+-name = "input_keys"
+-path = "examples/input_keys.rs"
+-
+-[[example]]
+-name = "input_touch"
+-path = "examples/input_touch.rs"
+-
+-[[example]]
+-name = "letterbox"
+-path = "examples/letterbox.rs"
+-
+-[[example]]
+-name = "life"
+-path = "examples/life.rs"
+-
+-[[example]]
+-name = "logs"
+-path = "examples/logs.rs"
+-
+-[[example]]
+-name = "particles_example"
+-path = "examples/particles_example.rs"
+-
+-[[example]]
+-name = "particles_single_emitter"
+-path = "examples/particles_single_emitter.rs"
+-
+-[[example]]
+-name = "platformer"
+-path = "examples/platformer.rs"
+-
+-[[example]]
+-name = "post_processing"
+-path = "examples/post_processing.rs"
+-
+-[[example]]
+-name = "raw_miniquad"
+-path = "examples/raw_miniquad.rs"
+-
+-[[example]]
+-name = "rustaceanmark"
+-path = "examples/rustaceanmark.rs"
+-
+-[[example]]
+-name = "screen_texture"
+-path = "examples/screen_texture.rs"
+-
+-[[example]]
+-name = "shadertoy"
+-path = "examples/shadertoy.rs"
+-
+-[[example]]
+-name = "snake"
+-path = "examples/snake.rs"
+-
+-[[example]]
+-name = "text"
+-path = "examples/text.rs"
+-
+-[[example]]
+-name = "text_measures"
+-path = "examples/text_measures.rs"
+-
+-[[example]]
+-name = "text_wrap"
+-path = "examples/text_wrap.rs"
+-
+-[[example]]
+-name = "texture"
+-path = "examples/texture.rs"
+-
+-[[example]]
+-name = "tree"
+-path = "examples/tree.rs"
+-
+-[[example]]
+-name = "ui"
+-path = "examples/ui.rs"
+-
+-[[example]]
+-name = "ui_skins"
+-path = "examples/ui_skins.rs"
+-
+-[[example]]
+-name = "window_conf"
+-path = "examples/window_conf.rs"
+-
+-[[test]]
+-name = "back_to_the_future"
+-path = "tests/back_to_the_future.rs"
+-
+-[[test]]
+-name = "back_to_the_future_coroutines"
+-path = "tests/back_to_the_future_coroutines.rs"
+-
+-[[test]]
+-name = "coroutine_pause"
+-path = "tests/coroutine_pause.rs"
+-
+-[[test]]
+-name = "coroutine_values"
+-path = "tests/coroutine_values.rs"
+-
+ [dependencies.backtrace]
+ version = "0.3.60"
+ optional = true
+@@ -234,6 +84,3 @@ version = "0.2"
+ optional = true
+ 
+ [dev-dependencies]
+-
+-[profile.dev.package."*"]
+-opt-level = 3
+diff --git a/vendor/macroquad/src/material.rs b/vendor/macroquad/src/material.rs
+index cf7f09e..1ba7ea8 100644
+--- a/vendor/macroquad/src/material.rs
++++ b/vendor/macroquad/src/material.rs
+@@ -67,20 +67,20 @@ pub struct MaterialParams {
+ /// # Default variables for OpenGL backend:
+ /// ## Attributes (order doesn't matter, any could be skipped):
+ /// ```glsl
+-/// attribute vec3 position;
+-/// attribute vec4 color0;
+-/// attribute vec2 texcoord;
++/// attribute vec3 pg_position;
++/// attribute vec4 pg_color0;
++/// attribute vec2 pg_texcoord;
+ /// ```
+ /// ## Uniforms (order doesn't matter, any could be skipped):
+ /// ```glsl
+-/// uniform mat4 Model;
+-/// uniform mat4 Projection;
+-/// uniform float4 _Time;
++/// uniform mat4 pg_Model;
++/// uniform mat4 pg_Projection;
++/// uniform float4 pg_Time;
+ /// ```
+ /// ## Textures (order doesn't matter, any could be skipped):
+ /// ```glsl
+-/// uniform sampler2D Texture;
+-/// uniform sampler2D _ScreenTexture; // check examples/screen_texture.rs to see how it works
++/// uniform sampler2D pg_Texture;
++/// uniform sampler2D pg_ScreenTexture; // check examples/screen_texture.rs to see how it works
+ /// ```
+ ///
+ /// # Default variables for Metal backend:
+diff --git a/vendor/macroquad/src/quad_gl.rs b/vendor/macroquad/src/quad_gl.rs
+index b4f9b22..94f45d6 100644
+--- a/vendor/macroquad/src/quad_gl.rs
++++ b/vendor/macroquad/src/quad_gl.rs
+@@ -371,12 +371,12 @@ impl PipelineExt {
+ }
+ 
+ struct PipelinesStorage {
+-    pipelines: [Option<PipelineExt>; Self::MAX_PIPELINES],
++    pipelines: Vec<Option<PipelineExt>>,
+     pipelines_amount: usize,
+ }
+ 
+ impl PipelinesStorage {
+-    const MAX_PIPELINES: usize = 32;
++    const MAX_PIPELINES: usize = 1024;
+     const TRIANGLES_PIPELINE: GlPipeline = GlPipeline(0);
+     const LINES_PIPELINE: GlPipeline = GlPipeline(1);
+     const TRIANGLES_DEPTH_PIPELINE: GlPipeline = GlPipeline(2);
+@@ -408,7 +408,7 @@ impl PipelinesStorage {
+         };
+ 
+         let mut storage = PipelinesStorage {
+-            pipelines: Default::default(),
++            pipelines: vec![None; Self::MAX_PIPELINES],
+             pipelines_amount: 0,
+         };
+ 
+@@ -483,10 +483,10 @@ impl PipelinesStorage {
+         let pipeline = ctx.new_pipeline(
+             &[BufferLayout::default()],
+             &[
+-                VertexAttribute::new("position", VertexFormat::Float3),
+-                VertexAttribute::new("texcoord", VertexFormat::Float2),
+-                VertexAttribute::new("color0", VertexFormat::Byte4),
+-                VertexAttribute::new("normal", VertexFormat::Float4),
++                VertexAttribute::new("pg_position", VertexFormat::Float3),
++                VertexAttribute::new("pg_texcoord", VertexFormat::Float2),
++                VertexAttribute::new("pg_color0", VertexFormat::Byte4),
++                VertexAttribute::new("pg_normal", VertexFormat::Float4),
+             ],
+             shader,
+             params,
+@@ -543,6 +543,10 @@ impl PipelinesStorage {
+         }
+     }
+ 
++    fn has_free_slot(&self) -> bool {
++        self.pipelines.iter().any(|p| p.is_none())
++    }
++
+     fn get_quad_pipeline_mut(&mut self, pip: GlPipeline) -> &mut PipelineExt {
+         self.pipelines[pip.0].as_mut().unwrap()
+     }
+@@ -613,6 +617,9 @@ impl QuadGl {
+         uniforms: Vec<UniformDesc>,
+         textures: Vec<String>,
+     ) -> Result<GlPipeline, Error> {
++        if !self.pipelines.has_free_slot() {
++            return Err(Error::UnknownError("too many materials"));
++        }
+         let mut shader_meta: ShaderMeta = shader::meta();
+ 
+         for uniform in &uniforms {
+@@ -620,14 +627,14 @@ impl QuadGl {
+         }
+ 
+         for texture in &textures {
+-            if texture == "Texture" {
++            if texture == "pg_Texture" {
+                 panic!(
+-                    "you can't use name `Texture` for your texture. This name is reserved for the texture that will be drawn with that material"
++                    "you can't use name `pg_Texture` for your texture. This name is reserved for the texture that will be drawn with that material"
+                 );
+             }
+-            if texture == "_ScreenTexture" {
++            if texture == "pg_ScreenTexture" {
+                 panic!(
+-                    "you can't use name `_ScreenTexture` for your texture in shaders. This name is reserved for screen texture"
++                    "you can't use name `pg_ScreenTexture` for your texture in shaders. This name is reserved for screen texture"
+                 );
+             }
+             shader_meta.images.push(texture.clone());
+@@ -637,7 +644,7 @@ impl QuadGl {
+             ShaderSource::Glsl { fragment, .. } => fragment,
+             ShaderSource::Msl { program } => program,
+         };
+-        let wants_screen_texture = source.contains("_ScreenTexture");
++        let wants_screen_texture = source.contains("pg_ScreenTexture");
+         let shader = ctx.new_shader(shader, shader_meta)?;
+         Ok(self.pipelines.make_pipeline(
+             ctx,
+@@ -777,9 +784,9 @@ impl QuadGl {
+                     pipeline.uniforms_data[i] = uniforms[i];
+                 }
+             }
+-            pipeline.set_uniform("Projection", projection);
+-            pipeline.set_uniform("Model", dc.model);
+-            pipeline.set_uniform("_Time", time);
++            pipeline.set_uniform("pg_Projection", projection);
++            pipeline.set_uniform("pg_Model", dc.model);
++            pipeline.set_uniform("pg_Time", time);
+             ctx.apply_uniforms_from_bytes(
+                 pipeline.uniforms_data.as_ptr(),
+                 pipeline.uniforms_data.len(),
+@@ -1040,31 +1047,31 @@ mod shader {
+     use miniquad::{ShaderMeta, UniformBlockLayout, UniformDesc, UniformType};
+ 
+     pub const VERTEX: &str = r#"#version 100
+-    attribute vec3 position;
+-    attribute vec2 texcoord;
+-    attribute vec4 color0;
+-    attribute vec4 normal;
++    attribute vec3 pg_position;
++    attribute vec2 pg_texcoord;
++    attribute vec4 pg_color0;
++    attribute vec4 pg_normal;
+ 
+     varying lowp vec2 uv;
+     varying lowp vec4 color;
+ 
+-    uniform mat4 Model;
+-    uniform mat4 Projection;
++    uniform mat4 pg_Model;
++    uniform mat4 pg_Projection;
+ 
+     void main() {
+-        gl_Position = Projection * Model * vec4(position, 1);
+-        color = color0 / 255.0;
+-        uv = texcoord;
++        gl_Position = pg_Projection * pg_Model * vec4(pg_position, 1);
++        color = pg_color0 / 255.0;
++        uv = pg_texcoord;
+     }"#;
+ 
+     pub const FRAGMENT: &str = r#"#version 100
+     varying lowp vec4 color;
+     varying lowp vec2 uv;
+ 
+-    uniform sampler2D Texture;
++    uniform sampler2D pg_Texture;
+ 
+     void main() {
+-        gl_FragColor = color * texture2D(Texture, uv) ;
++        gl_FragColor = color * texture2D(pg_Texture, uv) ;
+     }"#;
+ 
+     pub const METAL: &str = r#"
+@@ -1109,15 +1116,15 @@ mod shader {
+     "#;
+     pub fn uniforms() -> Vec<(&'static str, UniformType)> {
+         vec![
+-            ("Projection", UniformType::Mat4),
+-            ("Model", UniformType::Mat4),
+-            ("_Time", UniformType::Float4),
++            ("pg_Projection", UniformType::Mat4),
++            ("pg_Model", UniformType::Mat4),
++            ("pg_Time", UniformType::Float4),
+         ]
+     }
+ 
+     pub fn meta() -> ShaderMeta {
+         ShaderMeta {
+-            images: vec!["Texture".to_string(), "_ScreenTexture".to_string()],
++            images: vec!["pg_Texture".to_string(), "pg_ScreenTexture".to_string()],
+             uniforms: UniformBlockLayout {
+                 uniforms: uniforms()
+                     .into_iter()
+diff --git a/vendor/macroquad/src/ui.rs b/vendor/macroquad/src/ui.rs
+index e6ef132..7f434d4 100644
+--- a/vendor/macroquad/src/ui.rs
++++ b/vendor/macroquad/src/ui.rs
+@@ -1364,31 +1364,31 @@ pub(crate) mod ui_context {
+     }
+ 
+     const VERTEX_SHADER: &'static str = "#version 100
+-attribute vec3 position;
+-attribute vec4 color0;
+-attribute vec2 texcoord;
++attribute vec3 pg_position;
++attribute vec4 pg_color0;
++attribute vec2 pg_texcoord;
+ 
+ varying lowp vec2 uv;
+ varying lowp vec2 pos;
+ varying lowp vec4 color;
+ 
+-uniform mat4 Model;
+-uniform mat4 Projection;
++uniform mat4 pg_Model;
++uniform mat4 pg_Projection;
+ 
+ void main() {
+-    gl_Position = Projection * Model * vec4(position, 1);
+-    uv = texcoord;
+-    color = color0 / 255.0;
++    gl_Position = pg_Projection * pg_Model * vec4(pg_position, 1);
++    uv = pg_texcoord;
++    color = pg_color0 / 255.0;
+ }
+ ";
+     const FRAGMENT_SHADER: &'static str = "#version 100
+ varying lowp vec2 uv;
+ varying lowp vec4 color;
+ 
+-uniform sampler2D Texture;
++uniform sampler2D pg_Texture;
+ 
+ void main() {
+-    gl_FragColor = texture2D(Texture, uv) * color;
++    gl_FragColor = texture2D(pg_Texture, uv) * color;
+ }
+ ";
+     pub const METAL_SHADER: &str = r#"

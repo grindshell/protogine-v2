@@ -387,6 +387,63 @@ fn error_in_render_to() {
     );
 }
 
+/// Shaders are freed while draws that use them are pending, and a game can have more materials
+/// than stock macroquad allows (32). macroquad panics in either case unless the engine handles it.
+#[test]
+fn shaders_dropped_mid_frame() {
+    let game = TempGame::dir(
+        "shader-lifetimes",
+        &[(
+            "main.lua",
+            "local code = 'extern number k; vec4 effect(vec4 c, Image t, vec2 u, vec2 s) { return c * k; }'\n\
+             local canvas, kept, frames = nil, {}, 0\n\
+             function pg.load()\n\
+             \x20 canvas = pg.graphics.newCanvas(8, 8)\n\
+             \x20 for i = 1, 20 do kept[i] = pg.graphics.newShader(code) end\n\
+             end\n\
+             local function draw_with_a_new_shader()\n\
+             \x20 local shader = pg.graphics.newShader(code)\n\
+             \x20 shader:send('k', 0.5)\n\
+             \x20 pg.graphics.setShader(shader)\n\
+             \x20 pg.graphics.rectangle('fill', 0, 0, 4, 4)\n\
+             \x20 pg.graphics.setShader()\n\
+             \x20 shader = nil\n\
+             \x20 collectgarbage()\n\
+             end\n\
+             function pg.update()\n\
+             \x20 -- Left active, so the canvas's pending draws run at the start of the frame.\n\
+             \x20 pg.graphics.setCanvas(canvas)\n\
+             \x20 draw_with_a_new_shader()\n\
+             end\n\
+             function pg.draw()\n\
+             \x20 pg.graphics.setCanvas()\n\
+             \x20 draw_with_a_new_shader()\n\
+             \x20 for i, shader in ipairs(kept) do\n\
+             \x20   shader:send('k', 1)\n\
+             \x20   pg.graphics.setShader(shader)\n\
+             \x20   pg.graphics.setBlendMode(i % 2 == 0 and 'add' or 'screen')\n\
+             \x20   pg.graphics.rectangle('fill', i, 0, 1, 1)\n\
+             \x20   pg.graphics.setBlendMode('alpha')\n\
+             \x20   pg.graphics.rectangle('fill', i, 2, 1, 1)\n\
+             \x20 end\n\
+             \x20 pg.graphics.setShader()\n\
+             \x20 frames = frames + 1\n\
+             \x20 if frames == 30 then\n\
+             \x20   print('survived')\n\
+             \x20   pg.event.quit()\n\
+             \x20 end\n\
+             end\n",
+        )],
+    );
+    let output = run(&game.0, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("survived"),
+        "{}",
+        describe(&output)
+    );
+}
+
 #[test]
 fn missing_main() {
     let report = error_report("no-main", &[("other.lua", "")]);

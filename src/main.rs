@@ -8,6 +8,7 @@ mod graphics;
 mod input;
 mod math;
 mod screens;
+mod shader;
 mod system;
 mod vfs;
 

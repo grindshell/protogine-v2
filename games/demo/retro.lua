@@ -1,13 +1,15 @@
--- Canvases and blend modes: a tiny scene drawn at 24x16 pixels and scaled up 4x, with a glow
--- drawn in "add" mode. The canvas is translucent, so it's drawn with premultiplied alpha.
+-- Canvases, blend modes and shaders: a tiny scene drawn at 24x16 pixels and scaled up 4x, with
+-- a glow drawn in "add" mode. The canvas is translucent, so it's drawn with premultiplied alpha,
+-- through a scanline shader loaded from crt.glsl.
 
 local retro = {}
 
-local canvas
+local canvas, crt
 
 function retro.load()
   -- main.lua sets the default filter to "nearest", so the scaled-up pixels stay sharp.
   canvas = pg.graphics.newCanvas(24, 16)
+  crt = pg.graphics.newShader("crt.glsl")
 end
 
 function retro.draw(x, y, time)
@@ -30,13 +32,16 @@ function retro.draw(x, y, time)
     g.setBlendMode("alpha")
   end)
 
+  crt:send("time", time)
+  g.setShader(crt)
   g.setColor(1, 1, 1)
   g.setBlendMode("alpha", "premultiplied")
   g.draw(canvas, x, y, 0, 4)
   g.setBlendMode("alpha")
+  g.setShader()
 
   g.setColor(0.7, 0.7, 0.8)
-  g.print("canvas x4", x, y + 70)
+  g.print("canvas x4, shader", x, y + 70)
 end
 
 return retro

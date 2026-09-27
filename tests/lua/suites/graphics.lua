@@ -1,4 +1,4 @@
--- pg.graphics: state, argument checking, images, quads, canvases, blend modes, fonts and
+-- pg.graphics: state, argument checking, images, quads, canvases, blend modes, shaders, fonts and
 -- transforms.
 
 local t = require("harness")
@@ -234,6 +234,143 @@ function suite.run()
     end
   end))
   g.setBlendMode("alpha")
+
+  -- Shaders. Every uniform feeds the result, so compilers keep them all but `unused`.
+  local shader = g.newShader([[
+    extern vec4 tint;
+    extern number amount;
+    extern Image other;
+    extern vec2 offsets[3];
+    extern mat4 m;
+    extern int n;
+    extern bvec2 flags;
+    extern mat3 m3;
+    extern vec3 unused;
+
+    vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
+    {
+        vec4 extra = m[0] + vec4(offsets[2], m3[0].x, float(n)) + (flags.x ? vec4(1.0) : vec4(0.0));
+        return Texel(tex, texture_coords) * color * tint * amount + Texel(other, texture_coords) + extra;
+    }
+  ]])
+  t.check("shader type", shader:type() == "Shader")
+  t.check("getWarnings", type(shader:getWarnings()) == "string")
+  local has = {}
+  for _, name in ipairs({ "tint", "amount", "other", "offsets", "m", "n", "flags", "m3", "unused", "nope" }) do
+    has[#has + 1] = name .. "=" .. tostring(shader:hasUniform(name))
+  end
+  t.check("hasUniform", table.concat(has, " ") == "tint=true amount=true other=true offsets=true m=true "
+    .. "n=true flags=true m3=false unused=false nope=false", table.concat(has, " "))
+  t.check("send", pcall(function()
+    shader:send("tint", { 1, 0.5, 0.25, 1 })
+    shader:send("amount", 2)
+    shader:send("other", image)
+    shader:send("other", canvas)
+    shader:send("offsets", { 1, 2 }, { 3, 4 }, { 5, 6 }, { 7, 8 }) -- the fourth is ignored
+    shader:send("m", tf)
+    shader:send("m", { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } })
+    shader:send("m", "column", { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 6, 0, 1 })
+    shader:send("n", 3)
+    shader:send("n", 4.0)
+    shader:send("flags", { true, false })
+    shader:sendColor("tint", { 1, 1, 1, 1 })
+  end))
+  t.errors("send unused", "shader uniform 'unused' does not exist (a common cause is declaring it but never "
+    .. "using it)", shader.send, shader, "unused", { 1, 2, 3 })
+  t.errors("send mat3", "can't send to 'm3': mat3 uniforms aren't supported", shader.send, shader, "m3", {})
+  t.errors("send name", "bad argument #1 to 'send' (string expected, got no value)", shader.send, shader)
+  t.errors("send no value", "bad argument #2 to 'send' (number expected, got no value)",
+    shader.send, shader, "amount")
+  t.errors("send vec type", "bad argument #2 to 'send' (table expected, got number)", shader.send, shader, "tint", 1)
+  t.errors("send vec size", "bad argument #2 to 'send' (table must hold 4 numbers)",
+    shader.send, shader, "tint", { 1, 2, 3 })
+  t.errors("send array element", "bad argument #3 to 'send' (table must hold 2 numbers)",
+    shader.send, shader, "offsets", { 1, 2 }, { 3 })
+  t.errors("send int", "bad argument #2 to 'send' (number has no integer representation)",
+    shader.send, shader, "n", 1.5)
+  t.errors("send bvec", "bad argument #2 to 'send' (table must hold 2 booleans)",
+    shader.send, shader, "flags", { true, 1 })
+  t.errors("send image", "bad argument #2 to 'send' (Image or Canvas expected, got number)",
+    shader.send, shader, "other", 1)
+  t.errors("send matrix", "bad argument #2 to 'send' (table or Transform expected, got number)",
+    shader.send, shader, "m", 1)
+  t.errors("send matrix table", "bad argument #3 to 'send' (matrix table must hold 16 numbers)",
+    shader.send, shader, "m", "row", { 1, 2, 3 })
+  t.errors("send matrix layout",
+    "bad argument #2 to 'send' (invalid matrix layout 'diagonal', expected one of 'row', 'column')",
+    shader.send, shader, "m", "diagonal", tf)
+  t.errors("sendColor type", "sendColor can only be used on vec3 or vec4 uniforms",
+    shader.sendColor, shader, "amount", { 1, 1, 1 })
+
+  t.check("the default shader is active", g.getShader() == nil)
+  g.setShader(shader)
+  t.check("setShader", g.getShader() == shader and g.getShader() ~= g.newShader("fixtures/grayscale.glsl"))
+  t.check("draw everything with a shader", pcall(function()
+    g.rectangle("fill", 0, 0, 10, 10)
+    g.circle("line", 5, 5, 5)
+    g.polygon("fill", 0, 0, 10, 0, 5, 5)
+    g.line(0, 0, 10, 10)
+    g.points(1, 1)
+    g.print("shaded", 0, 0)
+    g.printf("shaded", 0, 0, 50, "right")
+    g.draw(image, 0, 0)
+    g.draw(canvas, quad, 0, 0)
+    for _, m in ipairs({ "alpha", "add", "subtract", "multiply", "screen", "replace" }) do
+      g.setBlendMode(m, "premultiplied")
+      g.rectangle("fill", 0, 0, 1, 1)
+    end
+    g.setBlendMode("alpha")
+  end))
+  shader:send("other", canvas)
+  g.setCanvas(canvas)
+  t.errors("draw into a canvas the shader reads",
+    "cannot draw into a Canvas that the active shader reads (it was sent to 'other')",
+    g.rectangle, "fill", 0, 0, 1, 1)
+  g.setCanvas()
+  g.setShader()
+  t.check("setShader()", g.getShader() == nil)
+  t.errors("setShader type", "bad argument #1 to 'setShader' (Shader expected, got number)", g.setShader, 5)
+
+  local vertex = "vec4 position(mat4 transform_projection, vec4 vertex_position) {\n"
+    .. "  return transform_projection * vertex_position;\n}\n"
+  local pixel = "vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {\n  return color;\n}\n"
+  t.check("vertex-only shader", pcall(g.newShader, vertex))
+  t.check("shader stages in either order", pcall(g.newShader, pixel, vertex) and pcall(g.newShader, vertex, pixel))
+  t.check("both stages in one string", pcall(g.newShader,
+    "#ifdef VERTEX\n" .. vertex .. "#endif\n#ifdef PIXEL\n" .. pixel .. "#endif\n"))
+  t.check("glsl1 pragma", pcall(g.newShader, "#pragma language glsl1\n" .. pixel))
+  t.check("Love2D's names", pcall(g.newShader, [[
+    #ifdef VERTEX
+    vec4 position(mat4 transform_projection, vec4 vertex_position) {
+      return ProjectionMatrix * TransformMatrix * (VertexPosition + VertexColor * ConstantColor * 0.0)
+        + vec4(VertexTexCoord.xy, 0.0, 0.0) * love_ScreenSize.x * 0.0;
+    }
+    #endif
+    #ifdef PIXEL
+    vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {
+      vec4 c = Texel(MainTex, VaryingTexCoord.st) * VaryingColor;
+      return gammaToLinear(linearToGamma(c)) + gammaToLinearPrecise(linearToGammaPrecise(c))
+        + unGammaCorrectColor(gammaCorrectColor(c)) + vec4(love_PixelCoord, 0.0, 0.0) * 0.0;
+    }
+    #endif
+  ]]))
+  t.errors("shader without an entry point", "could not parse shader code (missing 'position' or 'effect' function?)",
+    g.newShader, "void main() {}")
+  t.errors("glsl3 shader", "unsupported shader language 'glsl3' (shaders are GLSL ES 1.00, Love2D's 'glsl1', "
+    .. "because the web build uses WebGL 1)", g.newShader, "#pragma language glsl3\n" .. pixel)
+  t.errors("multi-canvas shader", "'void effect()' isn't supported (it draws into several canvases at once, and "
+    .. "only one canvas can be active)", g.newShader, "void effect() {}")
+  t.errors("shader NUL", "shader code can't contain NUL characters", g.newShader, pixel .. "\0")
+  t.errors("newShader type", "bad argument #1 to 'newShader' (string expected, got no value)", g.newShader)
+  -- Compilers word errors differently, but the line should count from the start of the game's code:
+  -- "0:4:" (ANGLE, Mesa), "0(4)" (NVIDIA).
+  local compiled, err = pcall(g.newShader, "extern number x;\n\nvec4 effect(vec4 c, Image t, vec2 uv, vec2 sc) {\n"
+    .. "  return oops;\n}\n")
+  t.check("shader compile error", not compiled and err:find("could not compile pixel shader code:\n", 1, true) == 1
+    and err:find("0[:(]4[:)(]") ~= nil, err)
+  compiled, err = pcall(g.newShader, "vec4 position(mat4 m, vec4 p) {\n  return oops;\n}\n")
+  t.check("vertex shader compile error", not compiled
+    and err:find("could not compile vertex shader code:\n", 1, true) == 1 and err:find("0[:(]2[:)(]") ~= nil, err)
 
   t.errors("pop underflow", "minimum stack depth reached (more pops than pushes?)", g.pop)
   for _ = 1, 64 do

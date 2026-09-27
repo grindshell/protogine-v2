@@ -2,7 +2,8 @@
 //!
 //! This is the engine side of `pg.graphics`; `api::graphics` maps Lua arguments onto it.
 //! Every draw call runs under the current transform, pushed onto macroquad's model-matrix stack
-//! just for that call, and with the current blend mode's material.
+//! just for that call, and with the material for the current blend mode: the blend mode's own,
+//! or the active shader's (see `shader`).
 //!
 //! macroquad batches draw calls and only runs them when the camera changes or the frame ends.
 //! Switching the target (the screen or a canvas) switches the camera, so every pending draw
@@ -16,6 +17,8 @@ use macroquad::{
     prelude::*,
     text::Font as MqFont,
 };
+
+use crate::shader::{self, Shader};
 
 /// Love2D caps the transform stack at 64 entries.
 pub const MAX_STACK_DEPTH: usize = 64;
@@ -100,31 +103,30 @@ fn blend_params(mode: BlendMode, alpha: AlphaMode) -> PipelineParams {
 /// macroquad's default shader, with a medium-precision `uv` so large textures sample correctly
 /// on phones.
 const VERTEX_SHADER: &str = r#"#version 100
-attribute vec3 position;
-attribute vec2 texcoord;
-attribute vec4 color0;
-attribute vec4 normal;
+attribute vec3 pg_position;
+attribute vec2 pg_texcoord;
+attribute vec4 pg_color0;
 
 varying lowp vec4 color;
 varying mediump vec2 uv;
 
-uniform mat4 Model;
-uniform mat4 Projection;
+uniform mat4 pg_Model;
+uniform mat4 pg_Projection;
 
 void main() {
-    gl_Position = Projection * Model * vec4(position, 1);
-    color = color0 / 255.0;
-    uv = texcoord;
+    gl_Position = pg_Projection * pg_Model * vec4(pg_position, 1);
+    color = pg_color0 / 255.0;
+    uv = pg_texcoord;
 }"#;
 
 const FRAGMENT_SHADER: &str = r#"#version 100
 varying lowp vec4 color;
 varying mediump vec2 uv;
 
-uniform sampler2D Texture;
+uniform sampler2D pg_Texture;
 
 void main() {
-    gl_FragColor = color * texture2D(Texture, uv);
+    gl_FragColor = color * texture2D(pg_Texture, uv);
 }"#;
 
 /// The material that draws with a blend mode. macroquad's default material blends alpha like
@@ -134,9 +136,9 @@ void main() {
 /// Each is created on first use and never freed: macroquad panics if a pending draw call's
 /// pipeline is gone, and a game that stops mid-frame leaves draw calls pending.
 fn blend_material(mode: BlendMode, alpha: AlphaMode) -> &'static Material {
-    const COUNT: usize = 12;
-    static MATERIALS: [OnceLock<Material>; COUNT] = [const { OnceLock::new() }; COUNT];
-    MATERIALS[mode as usize * 2 + alpha as usize].get_or_init(|| {
+    static MATERIALS: [OnceLock<Material>; shader::VARIANTS] =
+        [const { OnceLock::new() }; shader::VARIANTS];
+    MATERIALS[blend_index(mode, alpha)].get_or_init(|| {
         let shader = ShaderSource::Glsl {
             vertex: VERTEX_SHADER,
             fragment: FRAGMENT_SHADER,
@@ -149,8 +151,13 @@ fn blend_material(mode: BlendMode, alpha: AlphaMode) -> &'static Material {
     })
 }
 
+/// A number for each blend mode and alpha mode, below [`shader::VARIANTS`].
+fn blend_index(mode: BlendMode, alpha: AlphaMode) -> usize {
+    mode as usize * 2 + alpha as usize
+}
+
 /// Reads a GL limit such as `GL_MAX_TEXTURE_SIZE`.
-fn gl_limit(name: u32) -> i32 {
+pub(crate) fn gl_limit(name: u32) -> i32 {
     let mut value = 0;
     // SAFETY: the window, and so the GL context, exists whenever `Graphics` does, and this only
     // reads state.
@@ -289,6 +296,10 @@ impl Canvas {
         self.target.texture.set_filter(filter);
         self.filter.set(filter);
     }
+
+    pub(crate) fn texture(&self) -> &Texture2D {
+        &self.target.texture
+    }
 }
 
 /// Drawing into a canvas: its units map onto its pixels, with y pointing down.
@@ -397,6 +408,8 @@ pub struct Graphics {
     blend: (BlendMode, AlphaMode),
     /// The active canvas, or `None` for the screen.
     canvas: Option<Rc<Canvas>>,
+    /// The active shader, or `None` for the default.
+    shader: Option<Rc<Shader>>,
     transform: Mat4,
     stack: Vec<Mat4>,
     /// The largest texture side the GPU supports, or 0 if it didn't say.
@@ -417,6 +430,7 @@ impl Graphics {
             default_filter: FilterMode::Linear,
             blend: (BlendMode::Alpha, AlphaMode::Multiply),
             canvas: None,
+            shader: None,
             transform: Mat4::IDENTITY,
             stack: Vec::new(),
             max_texture_size: gl_limit(gl::GL_MAX_TEXTURE_SIZE),
@@ -439,6 +453,8 @@ impl Graphics {
         if let Some(canvas) = &self.canvas {
             set_camera(canvas.as_ref());
         }
+        // Switching cameras ran the canvas's pending draws, and clearing dropped the screen's.
+        shader::free_retired();
         self.transform = Mat4::IDENTITY;
         self.stack.clear();
     }
@@ -447,6 +463,7 @@ impl Graphics {
     /// material.
     pub fn shutdown(&mut self) {
         self.canvas = None;
+        self.shader = None;
         set_default_camera();
         gl_use_default_material();
     }
@@ -544,6 +561,30 @@ impl Graphics {
         std::mem::replace(&mut self.canvas, canvas)
     }
 
+    // ---- shaders ----
+
+    pub fn shader(&self) -> Option<Rc<Shader>> {
+        self.shader.clone()
+    }
+
+    /// Draws with `shader`, or with the default for `None`.
+    pub fn set_shader(&mut self, shader: Option<Rc<Shader>>) {
+        self.shader = shader;
+    }
+
+    /// `love_ScreenSize` for the active target: its size in pixels, and how to flip
+    /// `gl_FragCoord.y` so that y points down. Screen rows go up; a canvas's rows already point
+    /// down (see `Camera for Canvas`).
+    fn screen_size(&self) -> [f32; 4] {
+        match &self.canvas {
+            Some(canvas) => [canvas.pixel_width(), canvas.pixel_height(), 1.0, 0.0],
+            None => {
+                let (width, height) = macroquad::miniquad::window::screen_size();
+                [width, height, -1.0, height]
+            }
+        }
+    }
+
     // ---- transforms ----
 
     pub fn push(&mut self) -> Result<(), &'static str> {
@@ -601,18 +642,20 @@ impl Graphics {
     }
 
     // ---- shapes ----
+    //
+    // Drawing fails only if the active shader can't draw: see `Graphics::use_material`.
 
-    pub fn rectangle(&self, mode: ShapeMode, x: f32, y: f32, w: f32, h: f32) {
+    pub fn rectangle(&self, mode: ShapeMode, x: f32, y: f32, w: f32, h: f32) -> Result<(), String> {
         let points = [
             vec2(x, y),
             vec2(x + w, y),
             vec2(x + w, y + h),
             vec2(x, y + h),
         ];
-        self.shape(mode, &points, true);
+        self.shape(mode, &points, true)
     }
 
-    pub fn ellipse(&self, mode: ShapeMode, x: f32, y: f32, rx: f32, ry: f32) {
+    pub fn ellipse(&self, mode: ShapeMode, x: f32, y: f32, rx: f32, ry: f32) -> Result<(), String> {
         let segments =
             ((((rx.abs() + ry.abs()) / 2.0) * 20.0).sqrt().ceil() as usize).clamp(8, 256);
         let points: Vec<Vec2> = (0..segments)
@@ -621,40 +664,45 @@ impl Graphics {
                 vec2(x + rx * angle.cos(), y + ry * angle.sin())
             })
             .collect();
-        self.shape(mode, &points, true);
+        self.shape(mode, &points, true)
     }
 
-    pub fn polygon(&self, mode: ShapeMode, points: &[Vec2]) {
-        self.shape(mode, points, true);
+    pub fn polygon(&self, mode: ShapeMode, points: &[Vec2]) -> Result<(), String> {
+        self.shape(mode, points, true)
     }
 
-    pub fn line(&self, points: &[Vec2]) {
-        self.shape(ShapeMode::Line, points, false);
+    pub fn line(&self, points: &[Vec2]) -> Result<(), String> {
+        self.shape(ShapeMode::Line, points, false)
     }
 
-    pub fn points(&self, points: &[Vec2]) {
+    pub fn points(&self, points: &[Vec2]) -> Result<(), String> {
         let size = self.point_size;
         self.with_transform(self.transform, || {
             for p in points {
                 draw_rectangle(p.x - size / 2.0, p.y - size / 2.0, size, size, self.color);
             }
-        });
+        })
     }
 
-    fn shape(&self, mode: ShapeMode, points: &[Vec2], closed: bool) {
+    fn shape(&self, mode: ShapeMode, points: &[Vec2], closed: bool) -> Result<(), String> {
         self.with_transform(self.transform, || match mode {
             ShapeMode::Fill => fill_convex(points, self.color),
             ShapeMode::Line => stroke(points, closed, self.line_width, self.color),
-        });
+        })
     }
 
     // ---- images and text ----
 
     /// Draws an image, or the part of it under `quad`, with `local` (a placement or a
     /// Transform's matrix) on top of the current transform.
-    pub fn draw_image(&self, texture: &Texture2D, quad: Option<Rect>, local: Mat4) {
+    pub fn draw_image(
+        &self,
+        texture: &Texture2D,
+        quad: Option<Rect>,
+        local: Mat4,
+    ) -> Result<(), String> {
         let size = quad.map_or(texture.size(), |q| q.size());
-        self.draw_texture(texture, quad, size, local);
+        self.draw_texture(texture, quad, size, local)
     }
 
     /// Like [`Graphics::draw_image`], for a canvas. `quad` is in the canvas's units.
@@ -674,12 +722,17 @@ impl Graphics {
         let s = canvas.dpi_scale;
         let source = quad.map(|q| Rect::new(q.x * s, q.y * s, q.w * s, q.h * s));
         let size = quad.map_or(vec2(canvas.width, canvas.height), |q| q.size());
-        self.draw_texture(&canvas.target.texture, source, size, local);
-        Ok(())
+        self.draw_texture(&canvas.target.texture, source, size, local)
     }
 
     /// Draws `source` (in pixels; all of `texture` for `None`) stretched to `size` units.
-    fn draw_texture(&self, texture: &Texture2D, source: Option<Rect>, size: Vec2, local: Mat4) {
+    fn draw_texture(
+        &self,
+        texture: &Texture2D,
+        source: Option<Rect>,
+        size: Vec2,
+        local: Mat4,
+    ) -> Result<(), String> {
         self.with_transform(self.transform * local, || {
             draw_texture_ex(
                 texture,
@@ -692,19 +745,19 @@ impl Graphics {
                     ..Default::default()
                 },
             );
-        });
+        })
     }
 
-    pub fn print(&self, text: &str, local: Mat4) {
+    pub fn print(&self, text: &str, local: Mat4) -> Result<(), String> {
         let font = &self.font;
         self.with_transform(self.transform * local, || {
             for (i, line) in text.split('\n').enumerate() {
                 font.draw_line(line, 0.0, i, self.color);
             }
-        });
+        })
     }
 
-    pub fn printf(&self, text: &str, limit: f32, align: Align, local: Mat4) {
+    pub fn printf(&self, text: &str, limit: f32, align: Align, local: Mat4) -> Result<(), String> {
         let font = &self.font;
         let wrapped = wrap_text(text, font.font.as_ref(), font.size, 1.0, limit.max(1.0));
         self.with_transform(self.transform * local, || {
@@ -716,19 +769,39 @@ impl Graphics {
                 };
                 font.draw_line(line, x, i, self.color);
             }
-        });
+        })
     }
 
-    /// Runs `draw` with `matrix` as macroquad's model matrix, and the blend mode's material.
-    fn with_transform(&self, matrix: Mat4, draw: impl FnOnce()) {
-        // Set on every draw, since macroquad's own UI pass resets the material each frame.
-        gl_use_material(blend_material(self.blend.0, self.blend.1));
+    /// Runs `draw` with `matrix` as macroquad's model matrix, and the current material.
+    fn with_transform(&self, matrix: Mat4, draw: impl FnOnce()) -> Result<(), String> {
+        self.use_material()?;
         // SAFETY: each borrow of the GL context ends before `draw` touches macroquad again.
         unsafe { get_internal_gl() }
             .quad_gl
             .push_model_matrix(matrix);
         draw();
         unsafe { get_internal_gl() }.quad_gl.pop_model_matrix();
+        Ok(())
+    }
+
+    /// Switches to the material for the blend mode: the active shader's, or else the blend
+    /// mode's own. Set on every draw, since macroquad's own UI pass resets the material each
+    /// frame. Fails if the shader reads the active canvas, or can't make another material.
+    fn use_material(&self) -> Result<(), String> {
+        let (mode, alpha) = self.blend;
+        match &self.shader {
+            None => gl_use_material(blend_material(mode, alpha)),
+            Some(shader) => {
+                let material = shader.prepare(
+                    blend_index(mode, alpha),
+                    || blend_params(mode, alpha),
+                    self.screen_size(),
+                    self.canvas.as_ref(),
+                )?;
+                gl_use_material(&material);
+            }
+        }
+        Ok(())
     }
 }
 
