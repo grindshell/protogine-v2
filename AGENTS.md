@@ -21,6 +21,7 @@ Trade-offs:
 - Scripts are Lua 5.5, not Luau.
 - luars is an interpreter with no JIT.
 - It's a young crate, and its README examples lag behind the 0.26 API.
+- It has had compiler bugs. `vendor/luars` is 0.26.3 with a fix upstream hasn't released yet; see [vendor/README.md](vendor/README.md).
 
 ### luars API notes
 
@@ -39,7 +40,7 @@ Trade-offs:
 - `LuaTable`, `LuaFunction` and `Value` hold raw pointers into the VM, so drop them before the `Lua` that owns them. `Game` declares `lua` as its last field for this reason.
 - Async support comes through `register_async_function` and the `LuaAsyncApi` trait (`eval_async`, `call_async*`). Whether these work under macroquad's executor is still unverified.
 - `Lua` is `!Send` by default. The `unsafe-send` feature only adds unchecked `unsafe impl Send`. Don't enable it, because macroquad's loop is single-threaded anyway.
-- Source code is in `~/.cargo/registry/src/*/luars-*/src/`, and `src/lua_api/mod.rs` has the full trait surface.
+- Source code is in `vendor/luars/src/`, and `src/lua_api/mod.rs` has the full trait surface.
 
 ## Architecture
 
@@ -118,7 +119,7 @@ cargo xtask web [--release] [--game DIR]                # web build into target/
 cargo xtask serve [--release] [--game DIR] [--port N]   # web build, then serve at http://127.0.0.1:8080/
 ```
 
-The repo is a Cargo workspace: the root package is the engine, and `xtask/` holds the build tooling. `.claude/launch.json` has a `web` config that runs `cargo xtask serve --game games/demo`.
+The repo is a Cargo workspace: the root package is the engine, and `xtask/` holds the build tooling. `vendor/` holds patched dependencies, which the workspace excludes. `.claude/launch.json` has a `web` config that runs `cargo xtask serve --game games/demo`.
 
 ## Tests
 

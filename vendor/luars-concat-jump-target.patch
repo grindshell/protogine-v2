@@ -1,0 +1,90 @@
+From 381509ffe9808e941639e4363ba1d4d399e331b9 Mon Sep 17 00:00:00 2001
+From: Tim Yuen <timothy.yuen22@gmail.com>
+Date: Sat, 26 Sep 2026 20:39:07 -0400
+Subject: [PATCH] Don't merge or fold concatenations across a jump target
+
+codeconcat merged into the previous CONCAT, and posfix folded a string
+constant into the previous LOADK, without checking whether the current
+pc is a jump target. When it is, the jumping path skipped that
+instruction, so it lost the merged or folded operand:
+
+    "A" .. (yes and "C" or ("w" .. w))  --> "A"  (expected "AC")
+    (yes and "A" or "B") .. "C"         --> "A"  (expected "AC")
+
+Check fs.pc > fs.last_target in both places, as lcode.c's
+previousinstruction does and as the LOADNIL merge already does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/luars/src/compiler/code.rs       | 10 +++++++---
+ crates/luars/src/test/test_operators.rs | 26 +++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/crates/luars/src/compiler/code.rs b/crates/luars/src/compiler/code.rs
+index d3b7be8..c587748 100644
+--- a/crates/luars/src/compiler/code.rs
++++ b/crates/luars/src/compiler/code.rs
+@@ -1310,8 +1310,10 @@ fn swapexps(e1: &mut ExpDesc, e2: &mut ExpDesc) {
+ // Port of codeconcat from lcode.c:1686-1698
+ // Create code for '(e1 .. e2)'
+ fn codeconcat(fs: &mut FuncState, e1: &mut ExpDesc, e2: &mut ExpDesc, line: usize) {
+-    // Check if previous instruction is CONCAT to merge multiple concatenations
+-    if fs.pc > 0 {
++    // Check if previous instruction is CONCAT to merge multiple concatenations.
++    // Like lcode.c's previousinstruction, don't look past a jump target: code
++    // that jumps here skipped the previous instruction.
++    if fs.pc > fs.last_target {
+         let prev_pc = fs.pc - 1;
+         let prev_instr = fs.chunk.code[prev_pc];
+         if Instruction::get_opcode(prev_instr) == OpCode::Concat {
+@@ -1748,7 +1750,9 @@ pub fn posfix(
+             if e2.kind == ExpKind::VKSTR
+                 && e1.kind == ExpKind::VNONRELOC
+                 && !e1.has_jumps()
+-                && fs.pc > 0
++                // The LOADK must not be skipped by a jump to here, or folding
++                // it would drop e2 on that path.
++                && fs.pc > fs.last_target
+             {
+                 let prev_pc = fs.pc - 1;
+                 let prev_instr = fs.chunk.code[prev_pc];
+diff --git a/crates/luars/src/test/test_operators.rs b/crates/luars/src/test/test_operators.rs
+index 1aa09c4..c5b8a8c 100644
+--- a/crates/luars/src/test/test_operators.rs
++++ b/crates/luars/src/test/test_operators.rs
+@@ -99,6 +99,32 @@ fn test_concat_operator() {
+     assert!(result.is_ok());
+ }
+ 
++/// A jump to just after a CONCAT or LOADK must stop the compiler from merging
++/// into or folding away that instruction, or the jumping path loses operands.
++#[test]
++fn test_concat_after_jump_target() {
++    let mut vm = GlobalState::new(SafeOption::default());
++    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
++
++    let result = vm.main_state().execute(
++        r#"
++        local yes, no, w = true, false, "W"
++        -- Merging into the previous CONCAT
++        assert("A" .. (yes and "C" or ("w" .. w)) == "AC")
++        assert("A" .. (no and "C" or ("w" .. w)) == "AwW")
++        -- Folding a constant into the previous LOADK
++        assert((yes and "A" or "B") .. "C" == "AC")
++        assert((no and "A" or "B") .. "C" == "BC")
++        assert((yes and w or "B") .. "C" == "WC")
++        -- Unaffected chains
++        assert("A" .. "B" .. w == "ABW")
++        assert(("A" .. w) .. ("B" .. w) == "AWBW")
++    "#,
++    );
++
++    assert!(result.is_ok());
++}
++
+ #[test]
+ fn test_length_operator() {
+     let mut vm = GlobalState::new(SafeOption::default());
+-- 
+2.49.0.windows.1
+

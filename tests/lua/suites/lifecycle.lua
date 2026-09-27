@@ -1,4 +1,4 @@
--- Callbacks, arguments, quitting, and the sandboxed standard library.
+-- Callbacks, arguments, quitting, the sandboxed standard library, and luars fixes.
 -- tests/lua.rs runs this suite with the extra arguments "one" and "two".
 
 local t = require("harness")
@@ -17,6 +17,14 @@ function suite.run(args)
   t.check("binary chunks rejected", chunk == nil, err)
   t.check("load with env", load("return x", "env", "t", { x = 7 })() == 7)
   t.check("load keeps globals", load("return type(pg)")() == "table")
+
+  -- luars fixes (see vendor/README.md). A concatenation after an and/or
+  -- expression used to lose operands on the path that jumped past its last instruction.
+  local yes, no, w = true, false, "W"
+  t.check("concat after an or", "A" .. (yes and "C" or ("w" .. w)) == "AC"
+    and "A" .. (no and "C" or ("w" .. w)) == "AwW")
+  t.check("concat constant after an or", (yes and "A" or "B") .. "C" == "AC"
+    and (no and "A" or "B") .. "C" == "BC" and (yes and w or "B") .. "C" == "WC")
 
   -- Files and modules
   t.check("require", require("fixtures.answer").answer == 42)

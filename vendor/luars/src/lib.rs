@@ -1,0 +1,103 @@
+//! Lua Runtime.
+//!
+//! # Example
+//! ```ignore
+//! use luars::{Lua, LuaApi, SafeOption};
+//!
+//! let mut lua = Lua::new(SafeOption::default());
+//! let value: i64 = lua.load("return 40 + 2").eval()?;
+//! assert_eq!(value, 42);
+//! # Ok::<(), luars::LuaError>(())
+//! ```
+
+// Allow the derive macro to use `luars::...` paths even inside this crate
+extern crate self as luars;
+
+#[cfg(test)]
+mod test;
+
+mod compiler;
+mod gc;
+mod lib_registry;
+mod lua_api;
+mod lua_value;
+mod lua_vm;
+mod platform_time;
+mod stdlib;
+
+#[cfg(feature = "serde")]
+pub mod serde;
+
+// Re-export the derive macros so users can `use luars::LuaUserData;`
+pub use luars_derive::LuaUserData;
+pub use luars_derive::lua_methods;
+
+// Re-export userdata trait types at crate root for convenience
+pub use lua_value::LuaUserdata;
+pub use lua_value::UserDataBuilder;
+pub use lua_value::alive_ref::RefAliveToken;
+pub use lua_value::userdata_trait::{
+    LuaEnum, LuaMethodProvider, LuaRegistrable, LuaStaticMethodProvider, OpaqueUserData, UdValue,
+    UserDataTrait,
+};
+
+pub use lib_registry::{LibraryModule, LibraryRegistry, LuaLibrary, PreloadModule};
+pub use lua_api::*;
+pub use lua_value::RustCallback;
+pub use lua_value::lua_convert::{FromLua, FromLuaMulti, IntoLua};
+pub use lua_value::{
+    LuaProto, LuaRawFunction, LuaRawTable, LuaValue, LuaValueKind, chunk_serializer::*,
+};
+pub use lua_vm::SafeOption;
+#[cfg(feature = "sandbox")]
+pub use lua_vm::SandboxConfig;
+pub use lua_vm::async_thread::{
+    AsyncCallHandle, AsyncFuture, AsyncReturnValue, AsyncThread, IntoAsyncLua,
+};
+pub use lua_vm::lua_error::{LuaError, LuaFullError};
+pub use lua_vm::{
+    CFunction, CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef, LuaResult,
+    LuaState, LuaStringRef, LuaTableRef, OpCode, UserDataRef,
+};
+pub use lua_vm::{LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET};
+pub use stdlib::Stdlib;
+
+#[cfg(feature = "unsafe-send")]
+mod send_impls {
+    use crate::RefAliveToken;
+    use crate::lua_api::Lua;
+    use crate::lua_value::LuaValue;
+    use crate::lua_vm::{
+        GlobalState, LuaAnyRef, LuaFunctionRef, LuaState, LuaStringRef, LuaTableRef, UserDataRef,
+    };
+
+    unsafe impl Send for GlobalState {}
+    unsafe impl Sync for GlobalState {}
+
+    unsafe impl Send for LuaState {}
+    unsafe impl Sync for LuaState {}
+
+    unsafe impl Send for Lua {}
+    unsafe impl Sync for Lua {}
+
+    unsafe impl Send for LuaValue {}
+    unsafe impl Sync for LuaValue {}
+
+    unsafe impl Send for RefAliveToken {}
+    unsafe impl Sync for RefAliveToken {}
+
+    unsafe impl<T: 'static> Send for UserDataRef<T> {}
+    unsafe impl<T: 'static> Sync for UserDataRef<T> {}
+
+    unsafe impl Send for LuaTableRef {}
+    unsafe impl Sync for LuaTableRef {}
+
+    unsafe impl Send for LuaFunctionRef {}
+    unsafe impl Sync for LuaFunctionRef {}
+
+    unsafe impl Send for LuaAnyRef {}
+    unsafe impl Sync for LuaAnyRef {}
+
+    unsafe impl Send for LuaStringRef {}
+    unsafe impl Sync for LuaStringRef {}
+}
